@@ -1,0 +1,27 @@
+{
+  "name": "project-starter",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "clean": "rm -rf dist",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "test:related": "vitest related --run",
+    "lint": "oxlint --deny-warnings",
+    "lint:fix": "oxlint --fix && oxfmt",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit",
+    "typecheck:staged": "node scripts/typecheck-staged.mjs",
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "lefthook": "^1.11.0",
+    "oxfmt": "^0.63.0",
+    "oxlint": "^1.78.0",
+    "oxlint-tsgolint": "^7.0.2001",
+    "typescript": "6.0.3",
+    "vitest": "^4.0.18"
+  }
+}
