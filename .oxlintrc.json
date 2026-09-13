@@ -81,6 +81,12 @@
   },
   "overrides": [
     {
+      "files": [".pi/**/*.{ts,mts,cts}"],
+      "rules": {
+        "import/no-default-export": "off"
+      }
+    },
+    {
       "files": ["**/*.{test,spec}.{ts,tsx,mts,cts,js,jsx,mjs,cjs}"],
       "rules": {
         "no-empty": "off",

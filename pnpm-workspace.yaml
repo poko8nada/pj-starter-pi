@@ -1,2 +1,9 @@
+# 依存パッケージの install スクリプト実行可否（既定は拒否、必要なものだけ許可する）
+# lefthook は git フックの設置に install スクリプトが必須
 allowBuilds:
   lefthook: true
+  # 以下は optionalDependencies でプラットフォーム別バイナリが配布されるため不要
+  # (@earendil-works/pi-coding-agent の推移的依存。拡張の型解決にしか使わない)
+  '@google/genai': false
+  esbuild: false
+  protobufjs: false

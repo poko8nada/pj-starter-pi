@@ -1,0 +1,11 @@
+{
+  // 拡張はルート tsconfig.json の exclude 対象なので、専用 tsconfig を持つ。
+  // scripts/typecheck-staged.mjs の HARNESS_DIRS がこのファイルを参照する
+  // （無いと .pi 配下は型チェックを無言でスキップしてしまう）。
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["**/*.ts", "**/*.mts", "**/*.cts"],
+  "exclude": []
+}

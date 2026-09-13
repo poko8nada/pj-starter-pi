@@ -8,7 +8,7 @@
     "test:run": "vitest run",
     "test:related": "vitest related --run",
     "lint": "oxlint --deny-warnings",
-    "lint:fix": "oxlint --fix && oxfmt",
+    "lint:fix": "oxlint --fix",
     "format": "oxfmt",
     "format:check": "oxfmt --check",
     "typecheck": "tsc --noEmit",
@@ -16,6 +16,7 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@types/node": "^25.6.0",
     "lefthook": "^1.11.0",
     "oxfmt": "^0.63.0",
