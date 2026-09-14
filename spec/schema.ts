@@ -1,0 +1,404 @@
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+
+// spec の語彙・型・検証・読み書きをここに集約する。
+// 書き込み経路をこのファイルの関数だけに絞ることで、検証を通らない JSON が spec/ に生まれる余地をなくす。
+// ここを変えると型と実行時検証の両方が切り替わる。CLI は必ずこの語彙を通す。
+
+/** spec の2層。product は提供物、harness はそれを運用するメタ層。 */
+export const SPEC_TYPES = ['product', 'harness'] as const;
+export type SpecType = (typeof SPEC_TYPES)[number];
+
+/**
+ * build のライフサイクル。**手で宣言する**。progress からは導出しない。
+ * progress（チケットの消化状況）と status（判断）は別の軸として共存する。
+ * - planned:  プランだけ
+ * - building: 作っている最中
+ * - working:  動いている
+ * - closed:   追跡を閉じた（text に理由を書く）
+ */
+export const BUILD_STATES = ['planned', 'building', 'working', 'closed'] as const;
+export type BuildState = (typeof BUILD_STATES)[number];
+
+// ---- 型 ----
+
+/** build の進捗。ticket が1件も無い build はこのフィールド自体を持たない（0/0 とは書かない）。 */
+export interface BuildProgress {
+  readonly done: number;
+  readonly total: number;
+}
+
+/**
+ * build の状態。チケットからは判定できないため宣言する。
+ * state は語彙、text はなぜその状態なのかの説明（closed の理由もここ）。
+ */
+export interface BuildStatus {
+  readonly state: BuildState;
+  readonly text: string;
+}
+
+export interface Build {
+  readonly id: string;
+  readonly name: string;
+  readonly verify: string;
+  readonly uses: readonly string[];
+  readonly progress?: BuildProgress;
+  readonly status: BuildStatus;
+}
+
+export interface Spec {
+  readonly name: string;
+  readonly goal: readonly string[];
+  readonly nongoal: readonly string[];
+  readonly build: readonly Build[];
+}
+
+export interface SpecIssue {
+  readonly path: string;
+  readonly message: string;
+}
+
+/** 検証結果。問題が1件でもあれば spec は undefined になる。 */
+export interface SpecValidation {
+  readonly spec: Spec | undefined;
+  readonly issues: readonly SpecIssue[];
+}
+
+export class SpecError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SpecError';
+  }
+}
+
+// ---- 基本ガード ----
+
+/** 例外を1行のメッセージに正規化する。 */
+export function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return typeof input === 'object' && input !== null && !Array.isArray(input);
+}
+
+export function isSpecType(value: unknown): value is SpecType {
+  return typeof value === 'string' && (SPEC_TYPES as readonly string[]).includes(value);
+}
+
+function isBuildState(value: unknown): value is BuildState {
+  return typeof value === 'string' && (BUILD_STATES as readonly string[]).includes(value);
+}
+
+// ---- フィールド単位の読み取り ----
+
+function rejectUnknownKeys(
+  input: Record<string, unknown>,
+  allowed: readonly string[],
+  label: string,
+  issues: SpecIssue[],
+): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(input)) {
+    if (!allowedSet.has(key)) {
+      issues.push({
+        path: `${label}.${key}`,
+        message: `未知のフィールドです。許可: ${allowed.join(', ')}`,
+      });
+    }
+  }
+}
+
+function readString(input: unknown, label: string, issues: SpecIssue[]): string | undefined {
+  if (typeof input !== 'string') {
+    issues.push({ path: label, message: '文字列である必要があります' });
+    return undefined;
+  }
+  if (input === '') {
+    // 空文字は「書き忘れ」と区別できないため弾く。空配列は許す。
+    issues.push({ path: label, message: '空文字は許可されません' });
+    return undefined;
+  }
+  return input;
+}
+
+function readStringArray(input: unknown, label: string, issues: SpecIssue[]): string[] | undefined {
+  if (!Array.isArray(input)) {
+    issues.push({ path: label, message: '配列である必要があります' });
+    return undefined;
+  }
+  const values: string[] = [];
+  for (const [index, item] of input.entries()) {
+    const value = readString(item, `${label}[${index}]`, issues);
+    if (value !== undefined) {
+      values.push(value);
+    }
+  }
+  return values;
+}
+
+function readCount(input: unknown, label: string, issues: SpecIssue[]): number | undefined {
+  if (typeof input !== 'number' || !Number.isInteger(input) || input < 0) {
+    issues.push({ path: label, message: '0 以上の整数である必要があります' });
+    return undefined;
+  }
+  return input;
+}
+
+function readProgress(
+  input: unknown,
+  label: string,
+  issues: SpecIssue[],
+): BuildProgress | undefined {
+  // フィールドごと省略されている状態が「ticket 0件」を意味する
+  if (input === undefined) {
+    return undefined;
+  }
+  if (!isRecord(input)) {
+    issues.push({ path: label, message: 'オブジェクトである必要があります' });
+    return undefined;
+  }
+  rejectUnknownKeys(input, ['done', 'total'], label, issues);
+  const done = readCount(input.done, `${label}.done`, issues);
+  const total = readCount(input.total, `${label}.total`, issues);
+  if (done === undefined || total === undefined) {
+    return undefined;
+  }
+  if (total === 0) {
+    issues.push({
+      path: label,
+      message: 'ticket が0件の build は progress を持ちません。フィールドごと省略してください',
+    });
+    return undefined;
+  }
+  if (done > total) {
+    issues.push({ path: `${label}.done`, message: 'total 以下である必要があります' });
+    return undefined;
+  }
+  return { done, total };
+}
+
+/** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
+function readStatus(input: unknown, label: string, issues: SpecIssue[]): BuildStatus | undefined {
+  if (!isRecord(input)) {
+    issues.push({ path: label, message: 'オブジェクトである必要があります' });
+    return undefined;
+  }
+  rejectUnknownKeys(input, ['state', 'text'], label, issues);
+  if (!isBuildState(input.state)) {
+    issues.push({
+      path: `${label}.state`,
+      message: `次のいずれかである必要があります: ${BUILD_STATES.join(', ')}`,
+    });
+    return undefined;
+  }
+  const text = readString(input.text, `${label}.text`, issues);
+  return text === undefined ? undefined : { state: input.state, text };
+}
+
+// ---- build / spec の検証 ----
+
+const BUILD_KEYS = ['id', 'name', 'verify', 'uses', 'progress', 'status'] as const;
+
+function readBuild(input: unknown, label: string, issues: SpecIssue[]): Build | undefined {
+  if (!isRecord(input)) {
+    issues.push({ path: label, message: 'オブジェクトである必要があります' });
+    return undefined;
+  }
+  rejectUnknownKeys(input, BUILD_KEYS, label, issues);
+  const id = readString(input.id, `${label}.id`, issues);
+  const name = readString(input.name, `${label}.name`, issues);
+  const verify = readString(input.verify, `${label}.verify`, issues);
+  const uses = readStringArray(input.uses, `${label}.uses`, issues);
+
+  const beforeProgress = issues.length;
+  const progress = readProgress(input.progress, `${label}.progress`, issues);
+  const progressOk = issues.length === beforeProgress;
+
+  const beforeStatus = issues.length;
+  const status = readStatus(input.status, `${label}.status`, issues);
+  const statusOk = issues.length === beforeStatus;
+
+  if (id === undefined || name === undefined || verify === undefined || uses === undefined) {
+    return undefined;
+  }
+  if (!progressOk || !statusOk || status === undefined) {
+    return undefined;
+  }
+  return {
+    id,
+    name,
+    verify,
+    uses,
+    ...(progress === undefined ? {} : { progress }),
+    status,
+  };
+}
+
+function readBuildList(input: unknown, label: string, issues: SpecIssue[]): Build[] | undefined {
+  if (!Array.isArray(input)) {
+    issues.push({ path: label, message: '配列である必要があります' });
+    return undefined;
+  }
+  const builds: Build[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of input.entries()) {
+    const itemLabel = `${label}[${index}]`;
+    const build = readBuild(item, itemLabel, issues);
+    if (build === undefined) {
+      continue;
+    }
+    if (seen.has(build.id)) {
+      issues.push({ path: `${itemLabel}.id`, message: `id が重複しています: ${build.id}` });
+      continue;
+    }
+    seen.add(build.id);
+    builds.push(build);
+  }
+  return builds;
+}
+
+/**
+ * uses の参照を検証する。
+ * build は削除しない方針なので、参照切れは常に異常として弾く。
+ */
+function validateReferences(builds: readonly Build[], label: string, issues: SpecIssue[]): void {
+  const ids = new Set(builds.map((build) => build.id));
+  for (const [index, build] of builds.entries()) {
+    for (const [usedIndex, used] of build.uses.entries()) {
+      const path = `${label}.build[${index}].uses[${usedIndex}]`;
+      if (used === build.id) {
+        issues.push({ path, message: '自分自身を参照しています' });
+      } else if (!ids.has(used)) {
+        issues.push({ path, message: `存在しない build を参照しています: ${used}` });
+      }
+    }
+  }
+}
+
+/** 任意の入力を検証して Spec にする。問題は全件集めて返す。 */
+export function parseSpec(input: unknown, label: string): SpecValidation {
+  if (!isRecord(input)) {
+    return {
+      spec: undefined,
+      issues: [{ path: label, message: 'オブジェクトである必要があります' }],
+    };
+  }
+  const issues: SpecIssue[] = [];
+  rejectUnknownKeys(input, ['name', 'goal', 'nongoal', 'build'], label, issues);
+  const name = readString(input.name, `${label}.name`, issues);
+  const goal = readStringArray(input.goal, `${label}.goal`, issues);
+  const nongoal = readStringArray(input.nongoal, `${label}.nongoal`, issues);
+  const build = readBuildList(input.build, `${label}.build`, issues);
+
+  if (name === undefined || goal === undefined || nongoal === undefined || build === undefined) {
+    return { spec: undefined, issues };
+  }
+  validateReferences(build, label, issues);
+  if (issues.length > 0) {
+    return { spec: undefined, issues };
+  }
+  return { spec: { name, goal, nongoal, build }, issues };
+}
+
+// ---- パスとバージョン ----
+
+/** バージョンはファイル名が唯一の真実。3桁ゼロ埋めで辞書順と数値順を一致させる。 */
+export function formatVersion(version: number): string {
+  return `v${String(version).padStart(3, '0')}`;
+}
+
+function parseVersion(fileName: string): number | undefined {
+  const matched = /^v(\d+)\.json$/.exec(fileName);
+  return matched === null ? undefined : Number(matched[1]);
+}
+
+export function specTypeDir(root: string, specType: SpecType): string {
+  return join(root, 'spec', specType);
+}
+
+export function versionFile(root: string, specType: SpecType, version: number): string {
+  return join(specTypeDir(root, specType), `${formatVersion(version)}.json`);
+}
+
+/** 存在するバージョンを数値昇順で返す。 */
+export async function listVersions(root: string, specType: SpecType): Promise<number[]> {
+  let entries: string[];
+  try {
+    entries = await readdir(specTypeDir(root, specType));
+  } catch {
+    return [];
+  }
+  return entries
+    .map(parseVersion)
+    .filter((version): version is number => version !== undefined)
+    .toSorted((a, b) => a - b);
+}
+
+/** 現行版は数値最大のバージョン。履歴はファイルとして残るが、更新対象は常に現行版。 */
+export async function currentVersion(root: string, specType: SpecType): Promise<number> {
+  const latest = (await listVersions(root, specType)).at(-1);
+  if (latest === undefined) {
+    throw new SpecError(`spec/${specType}/ にバージョンファイルがありません`);
+  }
+  return latest;
+}
+
+// ---- 読み書き ----
+
+async function readText(file: string): Promise<string> {
+  try {
+    return await readFile(file, 'utf8');
+  } catch (error) {
+    throw new SpecError(`読み込めません: ${file} (${messageOf(error)})`);
+  }
+}
+
+/** 指定バージョン（省略時は現行版）を読み、検証して返す。 */
+export async function readSpec(root: string, specType: SpecType, version?: number): Promise<Spec> {
+  const resolved = version ?? (await currentVersion(root, specType));
+  const file = versionFile(root, specType, resolved);
+  const label = `${specType}/${formatVersion(resolved)}.json`;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await readText(file));
+  } catch (error) {
+    if (error instanceof SpecError) {
+      throw error;
+    }
+    throw new SpecError(`${label} が JSON として読めません: ${messageOf(error)}`);
+  }
+
+  const { spec, issues } = parseSpec(parsed, label);
+  if (spec === undefined) {
+    throw new SpecError(formatIssues(file, issues));
+  }
+  return spec;
+}
+
+function formatIssues(file: string, issues: readonly SpecIssue[]): string {
+  const lines = issues.map((issue) => `  ${issue.path}: ${issue.message}`);
+  return `${file}\n${lines.join('\n')}`;
+}
+
+/**
+ * 検証してから書き込む。検証を通らない入力はファイルに到達しない。
+ * status は宣言値なのでそのまま保存する（導出による上書きはしない）。
+ */
+export async function writeSpec(
+  root: string,
+  specType: SpecType,
+  version: number,
+  spec: unknown,
+): Promise<string> {
+  const label = `${specType}/${formatVersion(version)}.json`;
+  const { spec: validated, issues } = parseSpec(spec, label);
+  const file = versionFile(root, specType, version);
+  if (validated === undefined) {
+    throw new SpecError(formatIssues(file, issues));
+  }
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${JSON.stringify(validated, null, 2)}\n`, 'utf8');
+  return file;
+}
