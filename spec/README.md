@@ -28,22 +28,32 @@ Versions use three-digit zero padding (`v001`). **The file name is the only sour
 
 ## What to write
 
+This is an excerpt of `harness/v001.json` as it actually exists.
+
 ```json
 {
-  "name": "...",
-  "goal": ["what we want to achieve"],
-  "nongoal": ["what we will not do"],
+  "name": "project-starter-harness",
+  "goal": [
+    "プロダクトを成立させるための外側の仕組み（検証・整形・エージェント連携・CI）を提供すること",
+    "フォークして新規プロジェクトの土台として使えること"
+  ],
+  "nongoal": ["プロダクト固有の振る舞いを提供すること"],
   "build": [
     {
-      "id": "build-auth-login",
-      "name": "Login",
-      "verify": "Valid credentials issue a session; invalid ones fail",
-      "uses": [],
-      "progress": { "done": 2, "total": 5 },
-      "status": { "state": "building", "text": "Session handling landed; guards pending" }
+      "id": "gate-quality",
+      "name": "quality-gate 拡張",
+      "verify": "edit/write の後、編集されたファイルに対して format / lint / typecheck が自動で走り、失敗が followUp としてエージェントに返る",
+      "uses": ["script-typecheck-staged"],
+      "status": { "state": "working", "text": "スターターとして稼働中" }
     }
   ]
 }
+```
+
+`progress` appears only once tickets exist:
+
+```json
+{ "progress": { "done": 2, "total": 5 } }
 ```
 
 ### `build` is a thing to build
@@ -53,6 +63,48 @@ Not a "feature". Pages, authentication, APIs, and shared layouts all sit at the 
 - It must be **verifiable as a unit**. If you cannot write `verify`, the granularity is wrong.
 - **Omit what the code already tells you.** The stack is in `package.json`; skills are visible in the directory.
 - But **do write dependencies**, because no single file reveals them.
+
+### `id`
+
+Format: lowercase, hyphen-separated, **at least two segments**. The first segment is the kind.
+
+```
+<kind>-<what it is>
+```
+
+This is the only part a machine can check. The vocabulary is **not enforced** — it is a guide, because a closed list cannot cover websites, SaaS, apps, backends, frameworks, and libraries at once, and forcing one would repeat the mistake made with the `trigger` enum.
+
+What `id` must do is let a reader tell what gets built. **A constant segment carries no information**: `build-` appears on every id, so it distinguishes nothing. Prefer the kind.
+
+| Kind        | What it looks like from outside  | Example                                |
+| ----------- | -------------------------------- | -------------------------------------- |
+| `page`      | Opening a URL shows it           | `page-home`, `page-settings`           |
+| `api`       | An HTTP/RPC call returns         | `api-user-create`, `api-order-fetch`   |
+| `cli`       | Running a command does something | `cli-validate`, `cli-spec`             |
+| `lib`       | Importing it gives you something | `lib-parse`, `lib-hooks`               |
+| `event`     | Something happening triggers it  | `event-order-placed`                   |
+| `config`    | Changing config changes behavior | `config-lint-format`, `config-test`    |
+| `component` | A reusable piece of UI           | `component-button`, `component-dialog` |
+| `layout`    | A shell shared by screens        | `layout-header`, `layout-minimal`      |
+| `schema`    | How data is stored               | `schema-user`, `schema-order`          |
+| `migration` | Reshaping stored data            | `migration-add-user-role`              |
+| `storage`   | Files, objects, caches           | `storage-avatar`                       |
+| `auth`      | Proving who someone is           | `auth-login`, `auth-session-issue`     |
+| `job`       | Runs on a schedule or queue      | `job-daily-report`                     |
+| `notify`    | Tells the outside world          | `notify-email`, `notify-sound`         |
+| `i18n`      | Switching language               | `i18n-ja`                              |
+| `hook`      | Runs on a git operation          | `hook-lefthook`                        |
+| `ci`        | Runs on push or PR               | `ci-pullfrog`, `ci-release`            |
+| `gate`      | Judges quality and can block     | `gate-quality`                         |
+| `ext`       | Loaded by a host as an extension | `ext-sound-notify`                     |
+| `script`    | A standalone helper              | `script-typecheck-staged`              |
+| `doc`       | Read to understand               | `doc-agents`, `doc-spec`               |
+| `deploy`    | Puts it where it runs            | `deploy-cloudflare`                    |
+| `infra`     | Defines what it runs on          | `infra-turso`                          |
+
+Where the list is thin, extend it here. Adding a kind is a one-line change; being wrong is not fatal.
+
+`id` can be changed with `build:rename`, which rewrites every `uses` reference for you. Do not replace by hand.
 
 | Field      | Meaning                                                                                                                                                |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -87,9 +139,22 @@ These are two independent axes, and they coexist.
 
 ### Rules
 
-- **Never delete a build.** Close it instead (`state: "closed"`). Deletion would break `uses` references and tickets.
+- **Never delete a build.** Close it instead (`state: "closed"`). Deletion would break `uses` references and tickets. (Deletion is still under design.)
 - All fields are required. Empty arrays are allowed; empty strings are not, because they are indistinguishable from a forgotten value.
 - `progress` is the only field that may be absent, and absence carries meaning.
+
+### What validation enforces, and what it does not
+
+| Enforced                                      | Only guided                             |
+| --------------------------------------------- | --------------------------------------- |
+| `id` format: lowercase, hyphens, 2+ segments  | which kind to start with                |
+| unique `id` within a file                     | whether the name reads well             |
+| no unknown fields, no empty strings           | whether `verify` is actually verifiable |
+| `uses` resolves to a real build, never itself | whether the dependency is real          |
+| `state` in the vocabulary                     | whether the declared state is true      |
+| `progress.total > 0` and `done <= total`      | —                                       |
+
+`state` transitions are checked by the CLI rather than the schema, because the schema cannot see the previous state. The only forbidden move is `working → planned`: something that ran doesn't become a plan. Everything else is legitimate (rebuild, rollback, reopen, close).
 
 ## Writes go through the script
 
@@ -98,14 +163,19 @@ Never edit the JSON directly. Only the functions in `spec/schema.ts` read and wr
 ```bash
 node spec/cli.ts validate                  # validate current + all historical versions
 node spec/cli.ts show                      # print the current version
-node spec/cli.ts bump --to 2               # start the next version (builds are not carried over)
-node spec/cli.ts build:add --id build-x --name X --verify "Y" --text "not started"
-node spec/cli.ts build:state --id build-x --state building --text "why"
+node spec/cli.ts bump                      # next version, builds carried over
+node spec/cli.ts build:add --id auth-login --name "Login" --verify "..." --text "not started"
+node spec/cli.ts build:set --id auth-login --state building --text "why"
+node spec/cli.ts build:rename --id auth-login --to auth-session
 ```
 
 `--type product|harness` (default `product`) and `--version <n>` (default: current) are shared by every command.
 
 `package.json` does not register the CLI. It has no dependencies and runs on `node` alone, so `node spec/cli.ts` is the only entry point. **`v001` is the seed** and is written by hand once; everything from `v002` on goes through the CLI.
+
+Commands always target the **current version**. `bump` takes no argument: the next version is current + 1, and it **carries builds over** — a breaking change is "some things change", not "everything disappears". Pass `--version <n>` to touch history explicitly; the CLI warns when you do.
+
+`build:set` changes only the flags you pass. Omitting a flag keeps the current value, and passing none at all is an error. Adding is the one exception: a new build starts as `planned` by definition.
 
 ## Tickets
 

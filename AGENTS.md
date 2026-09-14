@@ -8,14 +8,21 @@ Development starter. It ships a harness, not a product. The harness is still und
 
 `spec/` describes the current state of the project. Every task starts there, and every task updates it.
 
-Never edit spec JSON by hand. Write through the CLI; validation runs before every write.
+- `product/` — what is shipped
+- `harness/` — the machinery that runs the product
 
-```bash
-node spec/cli.ts validate
-node spec/cli.ts show
-node spec/cli.ts build:add --id build-x --name X --verify "..." --text "..."
-node spec/cli.ts build:state --id build-x --state working --text "..."
-node spec/cli.ts bump --to 2
-```
+Each holds versioned JSON.
 
-Read `spec/README.md` before writing spec. It covers the vocabulary, the required fields, and the rules that validation enforces.
+### Build
+
+A **build** is a thing to build and verify as a unit. It is not a "feature": pages, authentication, APIs, and shared layouts all sit at the same level.
+
+- `status` is declared by hand: `planned`, `building`, `working`, `closed`
+- `progress` is computed from tickets
+- The two axes are independent on purpose
+
+### Writing
+
+Spec JSON is never edited by hand. Only `spec/cli.ts` writes it, and validation runs before every write.
+
+Read `spec/README.md` for the model, the vocabulary, and the commands.

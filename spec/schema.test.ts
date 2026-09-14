@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { BUILD_STATES, formatVersion, parseSpec, readSpec, SPEC_TYPES } from './schema.ts';
+import {
+  BUILD_STATES,
+  formatVersion,
+  isValidBuildId,
+  parseSpec,
+  readSpec,
+  SPEC_TYPES,
+} from './schema.ts';
 
 // spec/ の語彙・型・検証を試す単体テスト。
 // 外部依存なしで回るよう、JSON の形をそのまま parseSpec に渡す。
@@ -7,7 +14,7 @@ import { BUILD_STATES, formatVersion, parseSpec, readSpec, SPEC_TYPES } from './
 /** 最小の build。テストごとに必要な差分だけ上書きする。 */
 function buildJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    id: 'build-a',
+    id: 'gate-a',
     name: 'A',
     verify: 'A が動く',
     uses: [],
@@ -77,11 +84,51 @@ describe('parseSpec の受理', () => {
 
   it('uses で他の build を参照できる', () => {
     const { spec, issues } = parseSpec(
-      specJson([buildJson(), buildJson({ id: 'build-b', uses: ['build-a'] })]),
+      specJson([buildJson(), buildJson({ id: 'gate-b', uses: ['gate-a'] })]),
       'test',
     );
     expect(issues).toEqual([]);
-    expect(spec?.build[1]?.uses).toEqual(['build-a']);
+    expect(spec?.build[1]?.uses).toEqual(['gate-a']);
+  });
+});
+
+describe('build id の形式', () => {
+  const valid = ['gate-a', 'page-home', 'api-user-create', 'hook-lefthook', 'cli-spec'];
+  // 形では捕まえられないもの（定数セグメントや kind の選び方）はここに入れない。
+  // `build-gate-a` は形式としては通る。それは README のガイドで導く領域。
+  const invalid = [
+    'Gate-A',
+    'gate_a',
+    'gate--a',
+    '-gate-a',
+    'gate-a-',
+    'gate',
+    'a',
+    '',
+    '日本語-page',
+  ];
+
+  it.each(valid)('受理する: %s', (id) => {
+    expect(isValidBuildId(id)).toBe(true);
+  });
+
+  it.each(invalid)('拒否する: %s', (id) => {
+    expect(isValidBuildId(id)).toBe(false);
+  });
+
+  it('セグメントが1つだと弾く（種別だけでは何を作るか決まらない）', () => {
+    const { issues } = parseSpec(specJson([buildJson({ id: 'lefthook' })]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].id')).toBe(true);
+  });
+
+  it('不正な id のエラーに例が含まれる', () => {
+    const { issues } = parseSpec(specJson([buildJson({ id: 'badID' })]), 'test');
+    const issue = issues.find((item) => item.path === 'test.build[0].id');
+    expect(issue?.message).toContain('page-home');
+  });
+
+  it('定数セグメントは形式では弾けない（ガイドで導く領域）', () => {
+    expect(isValidBuildId('build-gate-a')).toBe(true);
   });
 });
 
@@ -144,12 +191,12 @@ describe('parseSpec の拒否', () => {
   });
 
   it('存在しない build への uses を弾く', () => {
-    const { issues } = parseSpec(specJson([buildJson({ uses: ['build-nope'] })]), 'test');
+    const { issues } = parseSpec(specJson([buildJson({ uses: ['gate-nope'] })]), 'test');
     expect(issues.some((issue) => issue.path === 'test.build[0].uses[0]')).toBe(true);
   });
 
   it('自己参照の uses を弾く', () => {
-    const { issues } = parseSpec(specJson([buildJson({ uses: ['build-a'] })]), 'test');
+    const { issues } = parseSpec(specJson([buildJson({ uses: ['gate-a'] })]), 'test');
     expect(issues.some((issue) => issue.message.includes('自分自身'))).toBe(true);
   });
 

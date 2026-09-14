@@ -20,6 +20,18 @@ export type SpecType = (typeof SPEC_TYPES)[number];
 export const BUILD_STATES = ['planned', 'building', 'working', 'closed'] as const;
 export type BuildState = (typeof BUILD_STATES)[number];
 
+/**
+ * id の形。小文字とハイフンのみで、2セグメント以上。
+ * 先頭セグメントは「何として外から見えるか」の種別（page, api, cli, gate など）。
+ * 種別の語彙はここでは縛らない。まず形だけを矯正し、意味は README の例で導く。
+ */
+const BUILD_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const MIN_ID_SEGMENTS = 2;
+
+/** id の書き方の例。検証違反のメッセージにそのまま差し込む。 */
+export const BUILD_ID_HINT =
+  '例: page-home, auth-login, api-user-create, cli-spec, gate-quality, hook-lefthook';
+
 // ---- 型 ----
 
 /** build の進捗。ticket が1件も無い build はこのフィールド自体を持たない（0/0 とは書かない）。 */
@@ -88,6 +100,14 @@ export function isSpecType(value: unknown): value is SpecType {
 
 function isBuildState(value: unknown): value is BuildState {
   return typeof value === 'string' && (BUILD_STATES as readonly string[]).includes(value);
+}
+
+/** 形（小文字・ハイフン区切り・2セグメント以上）だけを見る。種別の意味は検証しない。 */
+export function isValidBuildId(value: string): boolean {
+  if (!BUILD_ID_PATTERN.test(value)) {
+    return false;
+  }
+  return value.split('-').length >= MIN_ID_SEGMENTS;
 }
 
 // ---- フィールド単位の読み取り ----
@@ -178,6 +198,21 @@ function readProgress(
   return { done, total };
 }
 
+function readBuildId(input: unknown, label: string, issues: SpecIssue[]): string | undefined {
+  const value = readString(input, label, issues);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isValidBuildId(value)) {
+    issues.push({
+      path: label,
+      message: `id の形式が不正です: ${value}。小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
+    });
+    return undefined;
+  }
+  return value;
+}
+
 /** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
 function readStatus(input: unknown, label: string, issues: SpecIssue[]): BuildStatus | undefined {
   if (!isRecord(input)) {
@@ -206,7 +241,7 @@ function readBuild(input: unknown, label: string, issues: SpecIssue[]): Build | 
     return undefined;
   }
   rejectUnknownKeys(input, BUILD_KEYS, label, issues);
-  const id = readString(input.id, `${label}.id`, issues);
+  const id = readBuildId(input.id, `${label}.id`, issues);
   const name = readString(input.name, `${label}.name`, issues);
   const verify = readString(input.verify, `${label}.verify`, issues);
   const uses = readStringArray(input.uses, `${label}.uses`, issues);

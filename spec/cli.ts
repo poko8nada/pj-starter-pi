@@ -1,9 +1,11 @@
 import { parseArgs } from 'node:util';
 import {
+  BUILD_ID_HINT,
   BUILD_STATES,
   currentVersion,
   formatVersion,
   isSpecType,
+  isValidBuildId,
   listVersions,
   messageOf,
   readSpec,
@@ -17,7 +19,10 @@ import {
 } from './schema.ts';
 
 // spec/ の CLI。JSON の読み書きは schema.ts の関数だけを通す。
-// ここには「引数の解釈」と「表示」以外を書かない。
+// ここには「引数の解釈」「遷移の制約」「表示」以外を書かない。
+//
+// 遷移の制約を schema.ts ではなくここに置く理由:
+// parseSpec は「前の状態」を知らないので、単体では判定できない。
 
 const USAGE = `spec - spec/ の JSON を検証・更新する
 
@@ -25,17 +30,21 @@ const USAGE = `spec - spec/ の JSON を検証・更新する
   node spec/cli.ts <command> [options]
 
 読み取り:
-  validate                     現行版を検証する
-  show                         現行版を表示する
+  validate                     現行版と履歴の全バージョンを検証する
+  show                         表示する
 
 バージョン:
-  bump --to <n>                現行版を雛形に次版 <n> を作る
+  bump                         現行版の次のバージョンを作る（build は引き継ぐ）
 
 build の更新:
   build:add --id <id> --name <name> --verify <text> [--uses <id,id>] [--state <state>] [--text <text>]
-  build:state --id <id> --state <state> --text <text>
+  build:set --id <id> [--name <name>] [--verify <text>] [--uses <id,id>] [--state <state>] [--text <text>]
+  build:rename --id <id> --to <new-id>
 
+build:set は指定したフラグだけを変更する（省略したものは現状のまま）。
+1つも指定しなければエラーになる。
 status は宣言値。チケットからは導出されない。state は ${BUILD_STATES.join(' | ')} のいずれか。
+id は小文字とハイフンで2セグメント以上。先頭は種別。${BUILD_ID_HINT}
 
 共通オプション:
   --type <product|harness>     対象の層（既定: product）
@@ -99,6 +108,11 @@ function parseOptions(args: readonly string[]): Options {
   };
 }
 
+/** フラグが指定されたか。更新系で「省略＝変更しない」を判定するために使う。 */
+function has(options: Options, key: string): boolean {
+  return options.values[key] !== undefined;
+}
+
 function requireValue(options: Options, key: string, flag: string): string {
   const value = options.values[key];
   if (value === undefined || value === '') {
@@ -108,19 +122,54 @@ function requireValue(options: Options, key: string, flag: string): string {
 }
 
 /** --state の値を語彙に突き合わせる。 */
-function readState(raw: string | undefined, fallback: BuildState): BuildState {
-  const value = raw ?? fallback;
-  const matched = BUILD_STATES.find((state) => state === value);
+function readState(raw: string | undefined): BuildState {
+  const matched = BUILD_STATES.find((state) => state === raw);
   if (matched === undefined) {
-    fail(`--state は次のいずれかです: ${BUILD_STATES.join(', ')}（受け取った値: ${value}）`);
+    fail(`--state は次のいずれかです: ${BUILD_STATES.join(', ')}（受け取った値: ${raw}）`);
   }
   return matched;
+}
+
+/** --id の形を検証する。schema と同じ基準を入口でも適用して早く失敗させる。 */
+function readId(options: Options, key: string, flag: string): string {
+  const value = requireValue(options, key, flag);
+  if (!isValidBuildId(value)) {
+    fail(
+      `${flag} の形式が不正です: ${value}\n  小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
+    );
+  }
+  return value;
+}
+
+function readUses(raw: string | undefined): string[] {
+  return (raw ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter((value) => value !== '');
+}
+
+/**
+ * status の遷移制約。単体では判定できないので CLI 層に置く。
+ * 禁止は working -> planned のみ。「動いていたものがプランに戻る」のは事故のサインで、
+ * 他は全て正当（作り直し・巻き戻し・再開・閉じる）。
+ */
+function assertTransition(from: BuildState, to: BuildState): void {
+  if (from === 'working' && to === 'planned') {
+    fail(
+      `state を working から planned には戻せません（${from} -> ${to}）\n  動いているものを巻き戻す場合は building を経由してください。`,
+    );
+  }
 }
 
 /** 対象バージョンの Spec を読む。--version 省略時は現行版。 */
 async function load(options: Options): Promise<{ version: number; spec: Spec }> {
   const version = options.version ?? (await currentVersion(options.root, options.specType));
   return { version, spec: await readSpec(options.root, options.specType, version) };
+}
+
+/** 現行版かどうか。過去版への書き込みを警告するために使う。 */
+async function isCurrent(options: Options, version: number): Promise<boolean> {
+  return version === (await currentVersion(options.root, options.specType));
 }
 
 function statusLine(build: Build): string {
@@ -166,38 +215,61 @@ async function runShow(options: Options): Promise<void> {
   printSpec(spec, options, version);
 }
 
-/** 現行版を雛形に、指定バージョンのファイルを作る（build は引き継がない）。 */
+/**
+ * 次バージョンを作る。番号は現行+1で、引数では指定しない。
+ * build は引き継ぐ。破壊的変更は「一部を変える」ことであって「全部消す」ことではない。
+ */
 async function runBump(options: Options): Promise<void> {
-  const to = readVersion(options.values.to);
-  if (to === undefined) {
-    fail('bump には --to <n> が必要です');
-  }
   const { version, spec } = await load(options);
-  if (to <= version) {
-    fail(`--to は現行版より大きい必要があります（現行: ${formatVersion(version)}）`);
+  const next = version + 1;
+  const file = await writeSpec(options.root, options.specType, next, spec);
+  console.log(
+    `created ${file} (from ${formatVersion(version)}, ${spec.build.length} builds carried over)`,
+  );
+}
+
+/** 書き込み前に、対象バージョンが現行かどうかを確認して警告する。 */
+async function warnIfHistoric(options: Options, version: number): Promise<void> {
+  if (await isCurrent(options, version)) {
+    return;
   }
-  const next: Spec = { ...spec, build: [] };
-  const file = await writeSpec(options.root, options.specType, to, next);
-  console.log(`created ${file}`);
+  console.warn(
+    `warning: ${options.specType}/${formatVersion(version)} は現行版ではありません。履歴を書き換えます。`,
+  );
+}
+
+/** 対象の build だけを差し替えた build 配列を返す。見つからなければ null。 */
+function withBuild(spec: Spec, id: string, update: (build: Build) => Build): Spec | null {
+  if (!spec.build.some((build) => build.id === id)) {
+    return null;
+  }
+  return { ...spec, build: spec.build.map((build) => (build.id === id ? update(build) : build)) };
+}
+
+/** 対象の build を取得する。見つからなければエラーで終了する。 */
+function findBuild(spec: Spec, id: string): Build {
+  const found = spec.build.find((build) => build.id === id);
+  if (found === undefined) {
+    fail(`build が見つかりません: ${id}`);
+  }
+  return found;
 }
 
 async function runBuildAdd(options: Options): Promise<void> {
   const { version, spec } = await load(options);
-  const id = requireValue(options, 'id', '--id');
+  await warnIfHistoric(options, version);
+  const id = readId(options, 'id', '--id');
   if (spec.build.some((build) => build.id === id)) {
     fail(`build は既に存在します: ${id}`);
   }
-  const uses = (options.values.uses ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value !== '');
   const added: Build = {
     id,
     name: requireValue(options, 'name', '--name'),
     verify: requireValue(options, 'verify', '--verify'),
-    uses,
+    uses: readUses(options.values.uses),
     status: {
-      state: readState(options.values.state, 'planned'),
+      // 新規 build は定義上プランから始まる。更新系の「省略＝変更しない」とは別。
+      state: has(options, 'state') ? readState(options.values.state) : 'planned',
       text: requireValue(options, 'text', '--text'),
     },
   };
@@ -208,25 +280,84 @@ async function runBuildAdd(options: Options): Promise<void> {
   console.log(`added ${id} -> ${file}`);
 }
 
-/** 対象の build だけを差し替えた build 配列を返す。見つからなければ null（呼び出し側でエラーにする）。 */
-function withBuild(spec: Spec, id: string, update: (build: Build) => Build): Spec | null {
-  if (!spec.build.some((build) => build.id === id)) {
-    return null;
+/**
+ * 既存 build を更新する。省略したフラグは変更しない。
+ * 更新系で既定値にフォールバックすると、指定し忘れが黙って値を上書きする。
+ */
+async function runBuildSet(options: Options): Promise<void> {
+  const { version, spec } = await load(options);
+  const id = readId(options, 'id', '--id');
+  const current = findBuild(spec, id);
+
+  const touched =
+    has(options, 'name') ||
+    has(options, 'verify') ||
+    has(options, 'uses') ||
+    has(options, 'state') ||
+    has(options, 'text');
+  if (!touched) {
+    fail(
+      'build:set には少なくとも1つ変更するフラグが必要です（--name / --verify / --uses / --state / --text）',
+    );
   }
-  return { ...spec, build: spec.build.map((build) => (build.id === id ? update(build) : build)) };
+
+  const nextState = has(options, 'state') ? readState(options.values.state) : current.status.state;
+  assertTransition(current.status.state, nextState);
+
+  const updated: Build = {
+    ...current,
+    name: has(options, 'name') ? requireValue(options, 'name', '--name') : current.name,
+    verify: has(options, 'verify') ? requireValue(options, 'verify', '--verify') : current.verify,
+    uses: has(options, 'uses') ? readUses(options.values.uses) : current.uses,
+    status: {
+      state: nextState,
+      text: has(options, 'text') ? requireValue(options, 'text', '--text') : current.status.text,
+    },
+  };
+
+  await warnIfHistoric(options, version);
+  const file = await writeSpec(
+    options.root,
+    options.specType,
+    version,
+    withBuild(spec, id, () => updated),
+  );
+  console.log(`updated ${id} -> ${file}`);
 }
 
-async function runBuildState(options: Options): Promise<void> {
+/** id と uses だけを置換した build を返す（rename 用）。 */
+function renamedBuild(build: Build, from: string, to: string): Build {
+  return {
+    id: build.id === from ? to : build.id,
+    name: build.name,
+    verify: build.verify,
+    uses: build.uses.map((used) => (used === from ? to : used)),
+    ...(build.progress === undefined ? {} : { progress: build.progress }),
+    status: build.status,
+  };
+}
+
+/** id を変更し、uses の参照も同時に書き換える。手で置換させないためのコマンド。 */
+async function runBuildRename(options: Options): Promise<void> {
   const { version, spec } = await load(options);
-  const id = requireValue(options, 'id', '--id');
-  const state = readState(options.values.state, 'planned');
-  const text = requireValue(options, 'text', '--text');
-  const next = withBuild(spec, id, (build) => ({ ...build, status: { state, text } }));
-  if (next === null) {
-    fail(`build が見つかりません: ${id}`);
+  const from = readId(options, 'id', '--id');
+  const to = readId(options, 'to', '--to');
+  if (from === to) {
+    fail(`--id と --to が同じです: ${from}`);
   }
-  const file = await writeSpec(options.root, options.specType, version, next);
-  console.log(`${id} -> ${state} -> ${file}`);
+  if (spec.build.some((build) => build.id === to)) {
+    fail(`build は既に存在します: ${to}`);
+  }
+  findBuild(spec, from);
+
+  const renamed: Spec = {
+    ...spec,
+    build: spec.build.map((build) => renamedBuild(build, from, to)),
+  };
+
+  await warnIfHistoric(options, version);
+  const file = await writeSpec(options.root, options.specType, version, renamed);
+  console.log(`renamed ${from} -> ${to} -> ${file}`);
 }
 
 async function runCommand(command: string, options: Options): Promise<void> {
@@ -239,8 +370,10 @@ async function runCommand(command: string, options: Options): Promise<void> {
       return runBump(options);
     case 'build:add':
       return runBuildAdd(options);
-    case 'build:state':
-      return runBuildState(options);
+    case 'build:set':
+      return runBuildSet(options);
+    case 'build:rename':
+      return runBuildRename(options);
     default: {
       // 未知のコマンドは使い方を出して異常終了する
       console.log(USAGE);

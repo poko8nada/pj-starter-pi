@@ -7,17 +7,17 @@
   "nongoal": ["プロダクト固有の振る舞いを提供すること"],
   "build": [
     {
-      "id": "build-quality-gate",
+      "id": "gate-quality",
       "name": "quality-gate 拡張",
       "verify": "edit/write の後、編集されたファイルに対して format / lint / typecheck が自動で走り、失敗が followUp としてエージェントに返る",
-      "uses": ["build-typecheck-staged"],
+      "uses": ["script-typecheck-staged"],
       "status": {
         "state": "working",
         "text": "スターターとして稼働中"
       }
     },
     {
-      "id": "build-sound-notify",
+      "id": "ext-sound-notify",
       "name": "sound-notify 拡張",
       "verify": "プロンプト入力時とターン完了時に、設定に従って音と cmux 通知が出る",
       "uses": [],
@@ -27,7 +27,7 @@
       }
     },
     {
-      "id": "build-typecheck-staged",
+      "id": "script-typecheck-staged",
       "name": "typecheck-staged スクリプト",
       "verify": "対象ファイルのみを一時 tsconfig 経由で型チェックし、違反があれば非ゼロで終了する",
       "uses": [],
@@ -37,17 +37,17 @@
       }
     },
     {
-      "id": "build-lefthook",
+      "id": "hook-lefthook",
       "name": "lefthook による git フック",
       "verify": "pre-commit で format / lint / typecheck / test が並列に走り、pre-push で全体の typecheck と test が走る",
-      "uses": ["build-typecheck-staged"],
+      "uses": ["script-typecheck-staged"],
       "status": {
         "state": "working",
         "text": "スターターとして稼働中"
       }
     },
     {
-      "id": "build-lint-format",
+      "id": "config-lint-format",
       "name": "lint / format 設定",
       "verify": "oxlint --deny-warnings と oxfmt --check がリポジトリ全体で通り、違反時は非ゼロで終了する",
       "uses": [],
@@ -57,7 +57,7 @@
       }
     },
     {
-      "id": "build-test-runner",
+      "id": "config-test",
       "name": "テスト実行基盤",
       "verify": "vitest がテストを検出して実行し、失敗時に非ゼロで終了する",
       "uses": [],
@@ -67,7 +67,7 @@
       }
     },
     {
-      "id": "build-pullfrog",
+      "id": "ci-pullfrog",
       "name": "Pullfrog ワークフロー",
       "verify": "workflow_dispatch でプロンプトを渡すと、GitHub Actions 上でエージェントが実行される",
       "uses": [],
@@ -77,17 +77,17 @@
       }
     },
     {
-      "id": "build-agents-doc",
+      "id": "doc-agents",
       "name": "AGENTS.md",
       "verify": "エージェントが最初に読むファイルから spec/ の要点と仕組みに到達できる",
-      "uses": ["build-spec-cli"],
+      "uses": ["cli-spec"],
       "status": {
         "state": "working",
         "text": "スターターとして稼働中"
       }
     },
     {
-      "id": "build-spec-cli",
+      "id": "cli-spec",
       "name": "spec CLI とスキーマ",
       "verify": "node spec/cli.ts validate が現行版と履歴の全バージョンを検証し、語彙外の入力や形の壊れた build を拒否する",
       "uses": [],
