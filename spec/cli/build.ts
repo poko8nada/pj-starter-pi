@@ -178,7 +178,7 @@ async function runBuildRename(options: Options): Promise<void> {
   if (snapshot !== undefined) {
     const tickets = renameBuildInTickets([...snapshot.open, ...snapshot.archived], from, to);
     await persist(snapshot, tickets, renamed);
-    console.log(`renamed ${from} -> ${to} -> ${ticketsFile(options.root)}`);
+    console.log(`renamed ${from} -> ${to} -> ${ticketsFile(options.root, options.specType)}`);
     return;
   }
 

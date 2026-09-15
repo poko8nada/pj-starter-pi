@@ -7,7 +7,6 @@ import { formatTicketId, isValidTicketId, parseTicketFile, type Ticket } from '.
 function ticketJson(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'tkt-0001',
-    specType: 'product',
     targets: [{ build: 'auth-login', condition: 'セッションが発行される' }],
     title: 'ログインを実装',
     verify: '正しい資格情報でセッションが得られる',

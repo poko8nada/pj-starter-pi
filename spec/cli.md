@@ -35,6 +35,8 @@ node spec/cli/index.ts ticket:list --all
 
 `--type product|harness` (default `product`) and `--version <n>` (default: current) work on every command.
 
+For tickets, `--type` picks the layer, which is also where the tickets live: `spec/tickets/<layer>/`. A ticket belongs to exactly one layer, so there is no way to address a ticket without it.
+
 ## `--verify` is repeated
 
 ```bash

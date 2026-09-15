@@ -224,17 +224,44 @@ total = その総数、done = うち status === "done"
 
 ### チケットの保存
 
-| 場所                             | 中身                                        |
-| -------------------------------- | ------------------------------------------- |
-| `spec/tickets/current.json`      | **open なチケットだけ**（`todo` / `doing`） |
-| `spec/tickets/archive/v001.json` | `resolvedIn: 1` のチケット                  |
+**層ごとにディレクトリを分ける。** product と harness で独立にバージョンが進むため、
+1つの場所に混ぜると名前空間が衝突する（実測で確認。下の「見つかった穴」を参照）。
 
-- **1ファイル**（1チケット1ファイルにしない）
+| 場所                                      | 中身                                        |
+| ----------------------------------------- | ------------------------------------------- |
+| `spec/tickets/<specType>/current.json`    | **open なチケットだけ**（`todo` / `doing`） |
+| `spec/tickets/<specType>/archive/vN.json` | その層の vN の間に done になったもの        |
+
+```
+spec/tickets/
+  product/
+    current.json
+    archive/v003.json     ← product の v003
+  harness/
+    current.json
+    archive/v002.json     ← harness の v002
+```
+
 - **バージョンで括らない**（`v001` 用チケット、は作らない）。バージョンは「定義」の区切りであって作業の区切りではない
-- **live ファイルの不変条件は「open な作業だけ」** → 行数が無限に増えない
-- `progress(N)` が読むのは常に **2ファイル**（`current` + `archive/vN`）。バージョンが上がっても2固定
+- **`specType` フィールドは削除する。** ディレクトリが層を表すので冗長になる
+- **live ファイルの不変条件は「open な作業だけ」** → 行数が無限に増えない（`done.json` にしない理由）
+- `progress` が読むのは層ごとに **2ファイル**（`current` + `archive/vN`）。バージョンが上がっても2固定
 - done で**即アーカイブ**（bump 時ではない。bump は破壊的変更でしか起きず、それまで溜まる）
 - 完了は in-place のステータス変更ではなく移動。失敗時は「重複」になり、`validate` が検出できる（ロストしない）
+
+#### なぜ層で分けるか（実態）
+
+|            | スターター   | プロジェクト       |
+| ---------- | ------------ | ------------------ |
+| プロダクト | ほぼ触らない | **ほぼ全部**       |
+| ハーネス   | **ほぼ全部** | 一部（小さな変更） |
+
+**触る対象がほぼ逆。** 混ぜると、触らない方のチケットを読んで振り分けることになる。
+分ければ、読まない層は読まない。
+
+1つのチケットが両層の build を指すケースは**現実には無いと判断**。レイヤーが違う作業
+（ハーネスを直す / ページを作る）は、別々に起票する方が自然で、`targets` の完了条件も
+1つの意味に保てる。
 
 ### bump の挙動
 
@@ -268,12 +295,15 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 - [x] `build:remove` を独立コマンドにするか、bump の GC に任せるか
       → **両方やる。** 独立コマンドを持つ（明示操作） + `bump` でも GC する（忘れても溜まらない）。
       同じ参照ガード（open チケット・`uses` が参照していれば拒否）を両方にかける
-- [x] `archive/vN.json` のファイル名の付け方（`v001.json` でよいか）
+- [x] `archive/vN.json` のファイル名の付け方（`v001.json` でよいか。ただし**層ディレクトリの下**に置く）
 - [x] reopen で過去版の progress が動く件（警告して許可、でよいか）
 - [x] チケットを削除したときの `progress` 再計算（常に許可でよいか）
-- [ ] **後回し**: `spec init` / フォーク手順（チケットの形は確定済み。実装が残っている）
 - [x] `retiring` の語彙が適切か（`deprecating` / `removing` 等）
 - [x] `spec/harness` の build に `progress` を持たせるか（今は全部 absent）
+- [x] `spec init` / フォーク手順（→ #10 で実装）
+- [x] チケットを層で分けるか（→ #9 で実装。**分ける**）
+- [x] `closed` の build を init でどうするか（→ **削除**）
+- [x] `done.json` 1ファイルにするか（→ **しない**。`archive/vN` で live を小さく保つ）
 
 ---
 
@@ -309,10 +339,80 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 - [x] `spec/lib`（概念ごと）/ `spec/cli`（役割ごと）に分割
 - [x] `status` の入れ子を解消し、`note` を追加（build と ticket が同じ形に）
 
-### 8. 残り
+### 8. apply（スターター → プロジェクト） → 実装済み
 
-- [ ] `spec init` / フォーク手順（後回し）
-- [ ] 実運用で発見された問題への対処
+- [x] `scripts/apply.mjs`。rclone でハーネスのみコピーする（**追跡外**: `.git/info/exclude`）
+- [x] **dry-run を既定**にし、`--run` を明示させない限り書き込まない
+- [x] 適用対象 / 除外を JS 側の定数で持つ（`INCLUDE` / `EXCLUDE` / `KEEP_LISTED` / `NEVER`）
+- [x] `--delete` はオプトイン（`copy` / `sync` の切り替え。既定は `copy`）
+- [x] `--with-listed` の仕組み（**`KEEP_LISTED` は今は空**。拡張点として残す）
+- [x] `AGENTS.md` は既定で INCLUDE、`README.md` は除外
+- [x] `--from` を廃止（適用元はスクリプトの親で固定）
+- [x] `~` と相対パスを受け付ける（`expandHome`）
+- [x] dry-run の表示は `--combined` + `--log-level ERROR`
+- [x] **自分自身（`scripts/apply.mjs`）は配らない**（`EXCLUDE`）
+- [x] 適用後にプロジェクト側の `sync-progress` を呼ぶ（`--type harness` を明示）
+
+**git の merge は使えないと実測で確認。** JSON が1ファイルに複数 build を持つため、
+別の build を触っていても行ベースで衝突する。merge driver は `.git/config` にしか
+書けず clone で運べないので、配布物に組み込めない。→ ファイル単位で丸ごと置き換える
+rclone を採用。JSON の中身を解釈しないことが利点になる。
+
+### 9. チケットの層分離（見つかった穴の修正）
+
+**穴**: `archive/vN.json` が層とバージョンで二重に衝突する。product が v003、harness が v002 のとき、
+`v002` がどちらのものか決まらず、`current.json` も層を区別しないので、他層のチケットを
+「存在しない build を参照」と判定してしまう（実測で確認）。
+
+```
+product 検証: archive/v003 を探す → 無い → done を数えない → progress 不一致
+harness 検証: archive/v002 を読む → 中の page-home(product) を参照切れと判定
+```
+
+- [ ] `lib/ticket.ts`: `ticketsFile(root, specType)` / `archiveFile(root, specType, version)`
+- [ ] `lib/ticket.ts`: `specType` フィールドを削除
+- [ ] `lib/store.ts`: `loadSnapshot` を層別に読む。`computeProgress` / `syncProgress` / `clearTickets`
+- [ ] `cli/ticket.ts`: `--type` が場所を決める
+- [ ] テストのフィクスチャを修正
+- [ ] `spec/README.md` / `ticket.md` / `cli.md` の構造記述を更新
+
+**維持するもの**:
+
+- 過去バージョンの archive は読まない（bump で progress がリセットされる）
+- `bump` での progress 再計算
+- `resolvedIn`（置き場所と一致し、reopen の索引になる）
+
+### 10. init
+
+- [ ] `init` コマンドの実装
+- [ ] フォーク手順をリポジトリ直下の `README.md` に書く（git 履歴の切り方など）
+- [ ] `scripts/apply.mjs`: `KEEP_LISTED` は空配列。`AGENTS.md` は INCLUDE、`README.md` は除外
+
+**`init` がやること**:
+
+クローンした時点でスターター自身のチケットが溜まっている（ハーネスを作るために
+切ったもの）。チケットを消すと `progress` の算出元が無くなるので、両方を面倒見る。
+
+| #   | 対象                      | 処理                                                                   |
+| --- | ------------------------- | ---------------------------------------------------------------------- |
+| 1   | `spec/tickets/<層>/` 両層 | 全消去（`clearTickets`）                                               |
+| 2   | harness の現行版          | `progress` を再計算（`syncProgress`。チケット0件なので absent になる） |
+| 3   | `closed` の build         | **削除する**（bump と同じ理屈）                                        |
+| 4   | product                   | `name` / `goal` / `nongoal` を書き換え、`build` は `[]`                |
+| 5   | 全 build の `note`        | 「スターターから継承」に書き換え                                       |
+| 6   | 過去版                    | 触らない                                                               |
+
+**確定した詳細**:
+
+- 未 init の判定は「チケットが残っているか」を使う（残っていればスターター自身の状態）
+- `note` は全 build 一律で書き換える。`retiring` も継承で正しい（プロジェクトにはまだ存在する）
+- `closed` は削除するので、「継承」が嘘になる問題は起きない
+- `--name` / `--goal` / `--nongoal` は必須
+- `--type` は受け付けない（両層を触る）
+- `--note` は不要（機械的な初期化）
+- チケットは両層とも消す（レイヤー1の痕跡を残さない）
+
+### 11. 実運用で発見された問題への対処
 
 ## 実装中の発見（既知の割り切り）
 
@@ -323,3 +423,8 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
   書く前に `assertCandidateAcceptable` が止めるので、参照切れは発生しない。
 - **`--note` は消える操作（remove）と機械的操作（bump）には要らない。**
   残せないものに理由を要求しても記録にならないため。
+- **apply は JSON を解釈しない。** ファイル単位で丸ごと置き換える。git のマージは、
+  1ファイルに全 build を持つ JSON では行ベースで衝突するため使えない（実測済み）。
+- **apply はハーネスにチケットがあるプロジェクトで `validate` が落ちる。**
+  `progress` は正しく再計算されるが、スターターから来た `status: working` と、
+  プロジェクトのチケット状況（未完了）が矛盾する。`init` はチケットを消すので起きない。

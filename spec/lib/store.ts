@@ -1,9 +1,11 @@
 import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { DocumentError, formatIssues, type Issue } from './document.ts';
 import {
   currentVersion,
   readSpec,
   referencingBuilds,
+  SPEC_TYPES,
   writeSpec,
   type Build,
   type Spec,
@@ -13,6 +15,7 @@ import {
   archiveFile,
   emptyTicketFile,
   readTicketFile,
+  ticketsDir,
   ticketsFile,
   writeTicketFile,
   type Ticket,
@@ -51,13 +54,14 @@ async function readTicketsOrEmpty(file: string): Promise<readonly Ticket[]> {
   }
 }
 
-/** 現行 spec と、そのバージョンに関係するチケットを読み込む。 */
+/** 現行 spec と、その層のバージョンに関係するチケットを読み込む。 */
 export async function loadSnapshot(root: string, specType: SpecType): Promise<Snapshot> {
   const version = await currentVersion(root, specType);
   const spec = await readSpec(root, specType, version);
   // 読むファイルは常に2つ（current と archive/vN）。バージョンが上がっても増えない。
-  const open = await readTicketsOrEmpty(ticketsFile(root));
-  const archived = await readTicketsOrEmpty(archiveFile(root, version));
+  // 層はディレクトリで分かれているので、他層のチケットは読まない。
+  const open = await readTicketsOrEmpty(ticketsFile(root, specType));
+  const archived = await readTicketsOrEmpty(archiveFile(root, specType, version));
   return { root, specType, version, spec, open, archived };
 }
 
@@ -321,6 +325,37 @@ export function splitByStatus(tickets: readonly Ticket[]): TicketWrite {
 }
 
 /**
+ * progress をチケットから再計算して書き戻す。
+ *
+ * これが apply と init の共通部分。どちらも「チケットとハーネスの対応を取り直す」
+ * という同じ仕事をする。外部の道具（スターターの適用、フォーク）がスペックを書き換えた後に呼ばれるので、cross-document の検証を通さずに書ける必要がある。
+ * そのため readSpec で形だけ確かめ、progress だけを置き換えて書く。
+ */
+export async function syncProgress(root: string, specType: SpecType): Promise<number> {
+  const snapshot = await loadSnapshot(root, specType);
+  const progress = computeProgress(snapshot);
+  const rebuilt = snapshot.spec.build.map((build) => {
+    const { progress: _stale, ...rest } = build;
+    const value = progress.get(build.id);
+    return value === undefined ? rest : { ...rest, progress: value };
+  });
+  await writeSpec(root, specType, snapshot.version, { ...snapshot.spec, build: rebuilt });
+  return snapshot.version;
+}
+
+/**
+ * チケットを全消去する。フォークしたプロジェクトの初期状態を作る。
+ * 層ごとのディレクトリを丸ごと消す（archive も current も、層の数だけ）。
+ * 残すと「この層で何か終えた」と誤読される。
+ */
+export async function clearTickets(root: string): Promise<void> {
+  // 層ごとのディレクトリを並行して消す。互いに独立なので順序は要らない。
+  await Promise.all(
+    SPEC_TYPES.map((specType) => rm(ticketsDir(root, specType), { recursive: true, force: true })),
+  );
+}
+
+/**
  * チケットと spec の progress を一度に書き出す。
  *
  * 2ファイルを書くので原子的ではない。片方で落ちた場合は不整合が残るが、
@@ -341,8 +376,8 @@ export async function persist(
     return value === undefined ? rest : { ...rest, progress: value };
   });
 
-  const archive = archiveFile(snapshot.root, snapshot.version);
-  await writeTicketFile(ticketsFile(snapshot.root), { ticket: [...open] });
+  const archive = archiveFile(snapshot.root, snapshot.specType, snapshot.version);
+  await writeTicketFile(ticketsFile(snapshot.root, snapshot.specType), { ticket: [...open] });
   // 空にする場合も書く（reopen で全件戻ったとき、古いファイルを残すと検証が読んでしまう）。
   // ただし一度も作られていない場合は作らない（空の archive を並べても意味がない）。
   if (archived.length > 0 || existsSync(archive)) {

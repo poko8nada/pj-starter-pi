@@ -32,12 +32,12 @@ spec/
     index.ts           dispatch
     args.ts            flag parsing and vocabulary checks
     shared.ts          loading, validation, display
-    version.ts         validate / show / bump
+    version.ts         validate / show / sync-progress / bump
     build.ts           build commands
     ticket.ts          ticket commands
   product/v001.json    product definition
   harness/v001.json    harness definition
-  tickets/             current.json and archive/vN.json
+  tickets/<layer>/     current.json and archive/vN.json, one set per layer
 ```
 
 Tests sit next to what they test (`spec/lib/spec.test.ts`). The split follows two axes: `lib/` is by concept, `cli/` is by role. A new file should belong to one or the other without inventing a third.

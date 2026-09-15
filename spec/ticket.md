@@ -13,7 +13,6 @@ Definitions are inherited when the starter is forked; tickets are **not**. A new
 ```json
 {
   "id": "tkt-0001",
-  "specType": "product",
   "targets": [{ "build": "auth-login", "condition": "無効な資格情報では 401 が返る" }],
   "title": "失敗系の分岐を実装",
   "verify": "空欄・形式不正・不一致の3パターンで 401 とエラー表示が出る",
@@ -26,13 +25,14 @@ Definitions are inherited when the starter is forked; tickets are **not**. A new
 | Field        | Meaning                                                                    |
 | ------------ | -------------------------------------------------------------------------- |
 | `id`         | `tkt-0001`. Assigned automatically; numbers are never reused               |
-| `specType`   | `product` or `harness`. Tickets live in one place, so this says which      |
 | `targets`    | Which build's which condition this moves forward. See below                |
 | `title`      | What the work is                                                           |
 | `verify`     | What done means, narrower than the condition it advances                   |
 | `status`     | `todo`, `doing`, or `done`                                                 |
 | `note`       | Same as a build's `note`: why it last changed                              |
 | `resolvedIn` | Written by the machine. The version that was current when it became `done` |
+
+The layer is not a field. It is the directory the ticket lives in.
 
 ## `targets`
 
@@ -44,15 +44,23 @@ A build can span one, many, or no tickets. One ticket may also target several bu
 
 ## Where tickets live
 
+**Tickets are split by layer**, because product and harness version independently. Sharing one place makes `v002` ambiguous (whose v002?) and makes each layer read the other's tickets.
+
 ```
 spec/tickets/
-  current.json        open tickets: todo and doing
-  archive/v001.json   tickets that reached done while v001 was current
+  product/
+    current.json        open tickets: todo and doing
+    archive/v003.json   reached done while product v003 was current
+  harness/
+    current.json
+    archive/v002.json
 ```
 
-One file each, not one per ticket. The live file holds **only open work**, so it cannot grow without bound.
+Each layer keeps its own two files. A ticket does not carry a `specType` field: **the directory says which layer it belongs to**, and one ticket never spans both (removing a harness build and building a page are separate decisions, each with its own completion condition).
 
-Reading `progress` needs exactly two files, `current` and `archive/vN`, no matter how many versions exist. A ticket that reaches `done` moves to the archive immediately, and `resolvedIn` records which version that was — which also makes it the index for finding the ticket again when it is reopened.
+One file each, not one per ticket. The live file holds **only open work**, so it cannot grow without bound; finished work moves to the archive, which is frozen.
+
+Reading `progress` needs exactly two files — `current` and `archive/vN`, both under the build's own layer — no matter how many versions exist. A ticket that reaches `done` moves to the archive immediately, and `resolvedIn` records which version that was, which also makes it the index for finding the ticket again when it is reopened.
 
 Past versions' archives are **not read**. Renaming a build reaches the current archive but not an older one, and that is deliberate: the thing being checked is whether the current version agrees with the tickets. An old archive saying `page-home` where the current says `page-top` records that it was called `page-home` at the time.
 
@@ -61,7 +69,7 @@ Past versions' archives are **not read**. Renaming a build reaches the current a
 The counts come from the tickets that point at a build:
 
 ```
-progress = tickets targeting this build, in current + archive/vN
+progress = tickets in this layer's current + archive/vN that target this build
 total    = how many
 done     = how many have status done
 ```

@@ -10,11 +10,15 @@ import {
   writeJson,
   type Issue,
 } from './document.ts';
-import { isValidBuildId, SPEC_TYPES, type SpecType } from './spec.ts';
+import { isValidBuildId, type SpecType } from './spec.ts';
 
 // チケット（作業）の語彙・型・検証・読み書き。
-// build（作るもの）とは別の文書なので、schema.ts とは分ける。
+// build（作るもの）とは別の文書なので、spec.ts とは分ける。
 // 両方をまたぐ検証（progress の突き合わせ、targets の参照解決）は store.ts が行う。
+//
+// 層（product / harness）は**ディレクトリで表す**。フィールドでは持たない。
+// product と harness は独立にバージョンが進むので、1箇所に混ぜると
+// 「v002 はどちらの v002 か」「この build はどちらの層か」が決まらなくなる。
 
 /**
  * 作業の状態。build の state とは別物で、こちらは作業そのものの進み具合。
@@ -37,7 +41,6 @@ export interface TicketTarget {
 
 export interface Ticket {
   readonly id: string;
-  readonly specType: SpecType;
   readonly targets: readonly TicketTarget[];
   readonly title: string;
   readonly verify: string;
@@ -54,7 +57,7 @@ export interface Ticket {
   readonly resolvedIn?: number;
 }
 
-/** tickets/current.json の中身。open なチケットだけを持つ。 */
+/** current.json の中身。open なチケットだけを持つ。層はディレクトリが表す。 */
 export interface TicketFile {
   readonly ticket: readonly Ticket[];
 }
@@ -183,16 +186,7 @@ function readResolvedIn(input: unknown, label: string, issues: Issue[]): number 
 
 // ---- ticket の検証 ----
 
-const TICKET_KEYS = [
-  'id',
-  'specType',
-  'targets',
-  'title',
-  'verify',
-  'status',
-  'note',
-  'resolvedIn',
-] as const;
+const TICKET_KEYS = ['id', 'targets', 'title', 'verify', 'status', 'note', 'resolvedIn'] as const;
 
 function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | undefined {
   if (!isRecord(input)) {
@@ -202,13 +196,6 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
   rejectUnknownKeys(input, TICKET_KEYS, label, issues);
 
   const id = readTicketId(input.id, `${label}.id`, issues);
-  const specType = input.specType;
-  if (!isMemberOf(SPEC_TYPES, specType)) {
-    issues.push({
-      path: `${label}.specType`,
-      message: `次のいずれかである必要があります: ${SPEC_TYPES.join(', ')}`,
-    });
-  }
   const targets = readTargets(input.targets, `${label}.targets`, issues);
   const title = readString(input.title, `${label}.title`, issues);
   const verify = readString(input.verify, `${label}.verify`, issues);
@@ -228,7 +215,7 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
   if (note === undefined) {
     return undefined;
   }
-  if (!isMemberOf(SPEC_TYPES, specType) || !isTicketStatus(status)) {
+  if (!isTicketStatus(status)) {
     return undefined;
   }
   validateTargets(targets, `${label}.targets`, issues);
@@ -251,7 +238,6 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
 
   return {
     id,
-    specType,
     targets,
     title,
     verify,
@@ -306,13 +292,19 @@ export function parseTicketFile(
 
 // ---- パスと読み書き ----
 
-export function ticketsFile(root: string): string {
-  return `${root}/spec/tickets/current.json`;
+export function ticketsFile(root: string, specType: SpecType): string {
+  return `${root}/spec/tickets/${specType}/current.json`;
 }
 
-export function archiveFile(root: string, version: number): string {
+/** その層の、そのバージョンで done になったチケット。 */
+export function archiveFile(root: string, specType: SpecType, version: number): string {
   const padded = `v${String(version).padStart(3, '0')}`;
-  return `${root}/spec/tickets/archive/${padded}.json`;
+  return `${root}/spec/tickets/${specType}/archive/${padded}.json`;
+}
+
+/** その層のチケットディレクトリ。全消去など、丸ごと扱うときに使う。 */
+export function ticketsDir(root: string, specType: SpecType): string {
+  return `${root}/spec/tickets/${specType}`;
 }
 
 /** 空の TicketFile を読み書きせずに作る。 */

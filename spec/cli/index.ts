@@ -3,7 +3,7 @@ import { parseOptions } from './args.ts';
 import { runBuildAdd, runBuildRemove, runBuildRename, runBuildSet } from './build.ts';
 import { USAGE } from './shared.ts';
 import { runTicketAdd, runTicketList, runTicketRemove, runTicketSet } from './ticket.ts';
-import { runBump, runShow, runValidate } from './version.ts';
+import { runBump, runShow, runSyncProgress, runValidate } from './version.ts';
 
 // CLI の入口。コマンド名を関数に振り分けるだけで、中身は各モジュールにある。
 // ファイルの分け方:
@@ -20,6 +20,8 @@ async function runCommand(
   switch (command) {
     case 'validate':
       return runValidate(options);
+    case 'sync-progress':
+      return runSyncProgress(options);
     case 'show':
       return runShow(options);
     case 'bump':

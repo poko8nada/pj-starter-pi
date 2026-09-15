@@ -8,7 +8,13 @@ import {
   writeSpec,
   type Build,
 } from '../lib/spec.ts';
-import { computeProgressFor, loadSnapshot, removalBlockers, type Snapshot } from '../lib/store.ts';
+import {
+  computeProgressFor,
+  loadSnapshot,
+  removalBlockers,
+  syncProgress,
+  type Snapshot,
+} from '../lib/store.ts';
 import { load, printSpec, withSnapshot } from './shared.ts';
 
 // バージョンそのものを扱うコマンド。build の個別操作は build.ts にある。
@@ -37,10 +43,8 @@ async function runValidate(options: Options): Promise<void> {
 
 /**
  * 1バージョンを検証する。
- * 過去版は読み込んで形を確かめるだけ。progress はその時点のスナップショットなので、
- * 今のチケットと一致するはずがなく、突き合わせると常に落ちる。
- * 現行版だけ cross-document の検証（progress の突き合わせ、targets の参照解決、
- * working の被覆）を行う。
+ * 過去版は読み込んで形を確かめるだけ。progress はその時点のスナップショットなので、今のチケットと一致するはずがなく、突き合わせると常に落ちる。
+ * 現行版だけ cross-document の検証（progress の突き合わせ、targets の参照解決、working の被覆）を行う。
  */
 async function validateVersion(
   options: Options,
@@ -60,6 +64,17 @@ async function runShow(options: Options): Promise<void> {
 }
 
 /**
+ * progress をチケットから再計算して書き戻す。
+ *
+ * ハーネスをスターターから適用した直後、あるいはフォーク直後に使う。
+ * どちらも「チケットと spec の対応を取り直す」という同じ仕事をする外部の操作で、そのあと progress とチケットがずれた状態になる。
+ */
+async function runSyncProgress(options: Options): Promise<void> {
+  const version = await syncProgress(options.root, options.specType);
+  console.log(`synced progress ${options.specType}/${formatVersion(version)}`);
+}
+
+/**
  * 次バージョンを作る。番号は現行+1で、引数では指定しない。
  * build は引き継ぐ。破壊的変更は「一部を変える」ことであって「全部消す」ことではない。
  *
@@ -67,14 +82,9 @@ async function runShow(options: Options): Promise<void> {
  * ただし他から参照されているものは残す。参照が切れた状態で履歴に入れたくないため。
  * 自動で触るのは closed だけで、planned / building / working / retiring は残す。
  *
- * progress は引き継がず、新バージョンの数え方で置き直す。progress の算出元は
- * バージョンに属さないチケットなので、引き継ぐと必ずずれる（v001 では正しい値が
- * v002 では嘘になる）。新バージョンの archive はまだ無いので、open だけで数える。
+ * progress は引き継がず、新バージョンの数え方で置き直す。progress の算出元はバージョンに属さないチケットなので、引き継ぐと必ずずれる（v001 では正しい値がv002 では嘘になる）。新バージョンの archive はまだ無いので、open だけで数える。
  *
- * bump で切った後、前バージョンの archive は読まれない。rename や remove も
- * 現行の archive にしか届かない。これは「現行版とチケットが整合しているか」を
- * 常に検証できるようにするための割り切りで、前バージョンの記録はそのまま残す
- * （v001 時点では page-home だった、という事実として）。
+ * bump で切った後、前バージョンの archive は読まれない。rename や remove も現行の archive にしか届かない。これは「現行版とチケットが整合しているか」を常に検証できるようにするための割り切りで、前バージョンの記録はそのまま残す（v001 時点では page-home だった、という事実として）。
  */
 async function runBump(options: Options): Promise<void> {
   const snapshot = await loadSnapshot(options.root, options.specType);
@@ -123,5 +133,5 @@ async function runBump(options: Options): Promise<void> {
   }
 }
 
-export { runBump, runShow, runValidate };
+export { runBump, runShow, runSyncProgress, runValidate };
 export type { Snapshot };

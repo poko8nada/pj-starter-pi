@@ -101,7 +101,6 @@ export async function runTicketAdd(options: Options): Promise<void> {
   // 新規 ticket は todo から始まる。resolvedIn は done になったときに機械が書く。
   const ticket: Ticket = {
     id,
-    specType: options.specType,
     targets,
     title: requireValue(options, 'title', '--title'),
     verify: requireSingleValue(options, 'verify', '--verify'),
@@ -110,7 +109,7 @@ export async function runTicketAdd(options: Options): Promise<void> {
   };
 
   await persist(snapshot, [...snapshot.open, ...snapshot.archived, ticket], snapshot.spec);
-  console.log(`added ${id} -> ${ticketsFile(options.root)}`);
+  console.log(`added ${id} -> ${ticketsFile(options.root, options.specType)}`);
 }
 
 export async function runTicketSet(options: Options): Promise<void> {
@@ -136,7 +135,6 @@ export async function runTicketSet(options: Options): Promise<void> {
 
   const updated: Ticket = {
     id: current.id,
-    specType: current.specType,
     targets: has(options, 'condition') ? retarget(options, current) : current.targets,
     title: has(options, 'title') ? requireValue(options, 'title', '--title') : current.title,
     verify: has(options, 'verify')

@@ -63,7 +63,6 @@ function snapshotOf(input: {
 function ticket(build: string, condition: string | null, status: string, resolvedIn?: number) {
   return {
     id: `tkt-${Math.random().toString(36).slice(2, 6)}`,
-    specType: 'product',
     targets: [{ build, condition }],
     title: 'T',
     verify: 'V',
@@ -102,7 +101,6 @@ describe('computeProgress', () => {
       archived: [
         {
           id: 'tkt-0001',
-          specType: 'product',
           targets: [
             { build: 'a-b', condition: 'x' },
             { build: 'c-d', condition: 'y' },
