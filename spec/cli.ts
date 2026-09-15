@@ -10,6 +10,7 @@ import {
   listVersions,
   messageOf,
   readSpec,
+  referencingBuilds,
   SpecError,
   specTypeDir,
   TRANSITION_RULE,
@@ -36,12 +37,13 @@ const USAGE = `spec - spec/ の JSON を検証・更新する
   show                         表示する
 
 バージョン:
-  bump                         現行版の次のバージョンを作る（build は引き継ぐ）
+  bump                         現行版の次のバージョンを作る（build は引き継ぐ。closed は落とす）
 
 build の更新:
   build:add --id <id> --name <name> --verify <text> [--uses <id,id>] [--state <state>] [--text <text>]
   build:set --id <id> [--name <name>] [--verify <text>] [--uses <id,id>] [--state <state>] [--text <text>]
   build:rename --id <id> --to <new-id>
+  build:remove --id <id>       参照が1つも無いときだけ削除できる
 
 build:set は指定したフラグだけを変更する（省略したものは現状のまま）。
 1つも指定しなければエラーになる。
@@ -218,14 +220,43 @@ async function runShow(options: Options): Promise<void> {
 /**
  * 次バージョンを作る。番号は現行+1で、引数では指定しない。
  * build は引き継ぐ。破壊的変更は「一部を変える」ことであって「全部消す」ことではない。
+ *
+ * closed の build はここで落とす（build リストが縮む唯一の瞬間）。
+ * ただし他から参照されているものは残す。参照が切れた状態で履歴に入れたくないため。
+ * 自動で触るのは closed だけで、planned / building / working / retiring は残す。
  */
 async function runBump(options: Options): Promise<void> {
   const { version, spec } = await load(options);
   const next = version + 1;
-  const file = await writeSpec(options.root, options.specType, next, spec);
+
+  const dropped: string[] = [];
+  const keptClosed: { id: string; blockers: string[] }[] = [];
+  const kept: Build[] = [];
+  for (const build of spec.build) {
+    if (build.status.state !== 'closed') {
+      kept.push(build);
+      continue;
+    }
+    const blockers = referencingBuilds(spec, build.id);
+    if (blockers.length > 0) {
+      keptClosed.push({ id: build.id, blockers });
+      kept.push(build);
+      continue;
+    }
+    dropped.push(build.id);
+  }
+
+  const file = await writeSpec(options.root, options.specType, next, { ...spec, build: kept });
   console.log(
-    `created ${file} (from ${formatVersion(version)}, ${spec.build.length} builds carried over)`,
+    `created ${file} (from ${formatVersion(version)}, ${kept.length} builds carried over)`,
   );
+  // 静かに消えないことが大事。何を落として何を残したかを必ず出す。
+  if (dropped.length > 0) {
+    console.log(`  dropped (closed): ${dropped.join(', ')}`);
+  }
+  for (const entry of keptClosed) {
+    console.log(`  kept closed (still referenced): ${entry.id} <- ${entry.blockers.join(', ')}`);
+  }
 }
 
 /** 書き込み前に、対象バージョンが現行かどうかを確認して警告する。 */
@@ -253,6 +284,27 @@ function findBuild(spec: Spec, id: string): Build {
     fail(`build が見つかりません: ${id}`);
   }
   return found;
+}
+
+/**
+ * 削除の前提条件を検査する。参照が1つでもあれば拒否する。
+ *
+ * チケットが入ったら、open なチケットの targets もここで見る。
+ * 参照を切る場所を1箇所に集約しておくことで、追加時に漏れないようにする。
+ */
+function assertRemovable(spec: Spec, build: Build): void {
+  const blockers = referencingBuilds(spec, build.id);
+  if (blockers.length === 0) {
+    return;
+  }
+  fail(
+    `build を削除できません: ${build.id}\n  次の build が uses で参照しています: ${blockers.join(', ')}\n  先に参照を外すか、その build も削除してください。`,
+  );
+}
+
+/** 削除した build を除いた Spec を返す。 */
+function withoutBuild(spec: Spec, id: string): Spec {
+  return { ...spec, build: spec.build.filter((build) => build.id !== id) };
 }
 
 async function runBuildAdd(options: Options): Promise<void> {
@@ -360,6 +412,22 @@ async function runBuildRename(options: Options): Promise<void> {
   console.log(`renamed ${from} -> ${to} -> ${file}`);
 }
 
+/**
+ * build を削除する。参照が1つでもあれば拒否する。
+ * 手で消すためのコマンドで、誤って作った build を更地に戻すためのもの。
+ * 「実在した work を終わらせる」は closed であって削除ではない。
+ */
+async function runBuildRemove(options: Options): Promise<void> {
+  const { version, spec } = await load(options);
+  const id = readId(options, 'id', '--id');
+  const build = findBuild(spec, id);
+  assertRemovable(spec, build);
+
+  await warnIfHistoric(options, version);
+  const file = await writeSpec(options.root, options.specType, version, withoutBuild(spec, id));
+  console.log(`removed ${id} -> ${file}`);
+}
+
 async function runCommand(command: string, options: Options): Promise<void> {
   switch (command) {
     case 'validate':
@@ -374,6 +442,8 @@ async function runCommand(command: string, options: Options): Promise<void> {
       return runBuildSet(options);
     case 'build:rename':
       return runBuildRename(options);
+    case 'build:remove':
+      return runBuildRemove(options);
     default: {
       // 未知のコマンドは使い方を出して異常終了する
       console.log(USAGE);

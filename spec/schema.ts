@@ -335,6 +335,15 @@ function validateReferences(builds: readonly Build[], label: string, issues: Spe
   }
 }
 
+/**
+ * その build を参照している build の id を返す。
+ * 削除の可否判定に使う（参照が1つでもあれば消せない）。
+ * チケットが入ったら、open なチケットの targets もここに加える。
+ */
+export function referencingBuilds(spec: Spec, id: string): string[] {
+  return spec.build.filter((build) => build.uses.includes(id)).map((build) => build.id);
+}
+
 /** 任意の入力を検証して Spec にする。問題は全件集めて返す。 */
 export function parseSpec(input: unknown, label: string): SpecValidation {
   if (!isRecord(input)) {

@@ -151,7 +151,8 @@ The ends mean "it is not there"; the three in between mean "it is there".
 
 ### Rules
 
-- **Never delete a build by hand.** `build:remove` handles it, and `bump` also drops `closed` builds. Deleting by hand would break `uses` references and tickets.
+- **Removing a build is `build:remove`, not a hand edit.** It refuses while anything still references the build by `uses`. Deleting by hand would leave those references dangling.
+- **Never delete a build to end it.** That is what `closed` means. `build:remove` is for a build that should never have existed (wrong granularity, created twice).
 - All fields are required. Empty arrays are allowed; empty strings are not, because they are indistinguishable from a forgotten value.
 - `progress` is the only field that may be absent, and absence carries meaning.
 
@@ -185,13 +186,22 @@ node spec/cli.ts bump                      # next version, builds carried over
 node spec/cli.ts build:add --id auth-login --name "Login" --verify "..." --text "not started"
 node spec/cli.ts build:set --id auth-login --state building --text "why"
 node spec/cli.ts build:rename --id auth-login --to auth-session
+node spec/cli.ts build:remove --id obsolete-thing
 ```
 
 `--type product|harness` (default `product`) and `--version <n>` (default: current) are shared by every command.
 
 `package.json` does not register the CLI. It has no dependencies and runs on `node` alone, so `node spec/cli.ts` is the only entry point. **`v001` is the seed** and is written by hand once; everything from `v002` on goes through the CLI.
 
-Commands always target the **current version**. `bump` takes no argument: the next version is current + 1, and it **carries builds over** — a breaking change is "some things change", not "everything disappears". Pass `--version <n>` to touch history explicitly; the CLI warns when you do.
+### Versions
+
+Commands always target the **current version**. `bump` takes no argument: the next version is current + 1.
+
+`bump` **carries builds over**, because a breaking change is "some things change", not "everything disappears". `closed` builds are the exception: they are dropped, which is the only moment the build list shrinks. A closed build that something still references by `uses` is kept instead, so the new version never starts with a dangling reference. `bump` prints what it dropped and what it kept.
+
+Pass `--version <n>` to touch history explicitly; the CLI warns when you do.
+
+### Updating
 
 `build:set` changes only the flags you pass. Omitting a flag keeps the current value, and passing none at all is an error. Adding is the one exception: a new build starts as `planned` by definition.
 

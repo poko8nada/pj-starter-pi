@@ -6,8 +6,10 @@ import {
   isValidBuildId,
   parseSpec,
   readSpec,
+  referencingBuilds,
   SPEC_TYPES,
   type BuildState,
+  type Spec,
 } from './schema.ts';
 
 // spec/ の語彙・型・検証を試す単体テスト。
@@ -251,5 +253,42 @@ describe('parseSpec の拒否', () => {
 describe('readSpec', () => {
   it('存在しないバージョンを SpecError で知らせる', async () => {
     await expect(readSpec('/nonexistent-root', 'product')).rejects.toThrow();
+  });
+});
+
+describe('referencingBuilds（削除の可否判定）', () => {
+  /** パースを通した Spec を作る。検証済みの形であることを保証する。 */
+  function specOf(builds: Record<string, unknown>[]): Spec {
+    const { spec } = parseSpec(specJson(builds), 'test');
+    if (spec === undefined) {
+      throw new Error('テストの前提が壊れている');
+    }
+    return spec;
+  }
+
+  it('参照している側の id を返す', () => {
+    const spec = specOf([
+      buildJson({ id: 'gate-a' }),
+      buildJson({ id: 'gate-b', uses: ['gate-a'] }),
+      buildJson({ id: 'gate-c', uses: ['gate-a'] }),
+    ]);
+    expect(referencingBuilds(spec, 'gate-a')).toEqual(['gate-b', 'gate-c']);
+  });
+
+  it('参照が無ければ空を返す（削除できる）', () => {
+    const spec = specOf([buildJson({ id: 'gate-a' }), buildJson({ id: 'gate-b' })]);
+    expect(referencingBuilds(spec, 'gate-b')).toEqual([]);
+  });
+
+  it('closed からも参照を数える（bump で残す判定に使う）', () => {
+    const spec = specOf([
+      buildJson({ id: 'gate-a' }),
+      buildJson({
+        id: 'gate-b',
+        uses: ['gate-a'],
+        status: { state: 'closed', text: '廃止' },
+      }),
+    ]);
+    expect(referencingBuilds(spec, 'gate-a')).toEqual(['gate-b']);
   });
 });
