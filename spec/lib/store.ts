@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
-import { DocumentError, formatIssues, type Issue } from './document.ts';
+import { DocumentError, formatIssues, writeJson, type Issue } from './document.ts';
 import {
   currentVersion,
   readSpec,
@@ -342,6 +342,105 @@ export async function syncProgress(root: string, specType: SpecType): Promise<nu
   await writeSpec(root, specType, snapshot.version, { ...snapshot.spec, build: rebuilt });
   return snapshot.version;
 }
+
+/**
+ * スターターの痕跡を落として、プロジェクトの初期状態を作る。
+ *
+ * init の本体。クローンしたプロジェクトの最初の1回だけ走る想定で、
+ * CLI ではなく scripts/init.mjs から呼ばれる（スターターで実行されたときに
+ * 自分自身を壊さないよう、実行側で判定する）。
+ *
+ * やること:
+ *   1. チケットを両層とも消す（レイヤー1の作業記録を持ち込まない）
+ *   2. closed の build を削除する（無くなったものを継承しても意味がない）
+ *   3. 残った build の note を「継承」に書き換える（直近の変更が init になったため）
+ *   4. product を空にする（name は呼び出し側が決める。goal / nongoal / build は空）
+ *   5. progress を再計算する（チケットが0件なので absent になる）
+ *
+ * product の name だけは引数で受け取る。他はすべて固定の初期値で、
+ * 中身は後から build:add / build:set で書く。
+ */
+export interface InitResult {
+  readonly removedBackend: readonly string[];
+  readonly noteRewritten: number;
+  readonly productFile: string;
+  readonly harnessFile: string;
+}
+
+/** 継承した build に付ける note。 */
+export const INHERITED_NOTE = 'スターターから継承';
+
+/**
+ * init 済みの印。バージョンと無関係なプロジェクト全体の状態なので、
+ * spec/product/vN.json の中ではなく別ファイルに置く。
+ * そうすることで bump がこのフィールドを引き継ぐことを考えなくて済む。
+ */
+export function initializedMarker(root: string): string {
+  return `${root}/spec/initialized.json`;
+}
+
+/** 既に init 済みか。マーカーの有無だけで判定する。 */
+export function isInitialized(root: string): boolean {
+  return existsSync(initializedMarker(root));
+}
+
+/** init 済みの印を書く。内容は記録としてのみ持ち、判定には使わない。 */
+async function writeInitializedMarker(root: string, from: string): Promise<void> {
+  await writeJson(initializedMarker(root), { initializedFrom: from });
+}
+
+export async function initializeProject(root: string, productName: string): Promise<InitResult> {
+  // 1. チケットを落とす（以降の参照判定から消える）
+  await clearTickets(root);
+
+  // 2. harness の closed を削除し、3. 残りの note を書き換える
+  const harness = await loadSnapshot(root, 'harness');
+  const removed = harness.spec.build.filter((build) => build.status === 'closed');
+  // closed を消す前に参照を確かめる。uses が指していたら消せない。
+  const blocked = removed.flatMap((build) => removalBlockers(harness, build.id));
+  if (blocked.length > 0) {
+    throw new DocumentError(
+      `closed の build を削除できません。参照が残っています:\n  ${blocked.join('\n  ')}`,
+    );
+  }
+
+  const removedIds = new Set(removed.map((build) => build.id));
+  const kept: Build[] = [];
+  for (const build of harness.spec.build) {
+    if (removedIds.has(build.id)) {
+      continue;
+    }
+    const { progress: _stale, ...rest } = build;
+    kept.push({ ...rest, note: INHERITED_NOTE });
+  }
+  const harnessFile = await writeSpec(root, 'harness', harness.version, {
+    ...harness.spec,
+    build: kept,
+  });
+
+  // 4. product を空にする。name は呼び出し側が決める。
+  const product = await loadSnapshot(root, 'product');
+  const empty = {
+    name: productName,
+    goal: [],
+    nongoal: [],
+    build: [],
+  };
+  const productFile = await writeSpec(root, 'product', product.version, empty);
+
+  // 5. init 済みの印を書く。これがある限り、何度 pnpm install しても init は走らない。
+  await writeInitializedMarker(root, STARTER_ORIGIN);
+
+  return {
+    removedBackend: removed.map((build) => build.id),
+    noteRewritten: kept.length,
+    productFile,
+    harnessFile,
+  };
+}
+
+/** 印に記録する、fork 元の名前。現時点では参照しない。 */
+const STARTER_ORIGIN = 'project-starter';
 
 /**
  * チケットを全消去する。フォークしたプロジェクトの初期状態を作る。

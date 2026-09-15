@@ -13,7 +13,7 @@
     "format:check": "oxfmt --check",
     "typecheck": "tsc --noEmit",
     "typecheck:staged": "node scripts/typecheck-staged.mjs",
-    "prepare": "lefthook install"
+    "prepare": "node scripts/init.mjs && lefthook install"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

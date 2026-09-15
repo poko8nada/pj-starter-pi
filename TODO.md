@@ -358,7 +358,7 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 書けず clone で運べないので、配布物に組み込めない。→ ファイル単位で丸ごと置き換える
 rclone を採用。JSON の中身を解釈しないことが利点になる。
 
-### 9. チケットの層分離（見つかった穴の修正）
+### 9. チケットの層分離（見つかった穴の修正） → 完了
 
 **穴**: `archive/vN.json` が層とバージョンで二重に衝突する。product が v003、harness が v002 のとき、
 `v002` がどちらのものか決まらず、`current.json` も層を区別しないので、他層のチケットを
@@ -369,48 +369,55 @@ product 検証: archive/v003 を探す → 無い → done を数えない → p
 harness 検証: archive/v002 を読む → 中の page-home(product) を参照切れと判定
 ```
 
-- [ ] `lib/ticket.ts`: `ticketsFile(root, specType)` / `archiveFile(root, specType, version)`
-- [ ] `lib/ticket.ts`: `specType` フィールドを削除
-- [ ] `lib/store.ts`: `loadSnapshot` を層別に読む。`computeProgress` / `syncProgress` / `clearTickets`
-- [ ] `cli/ticket.ts`: `--type` が場所を決める
-- [ ] テストのフィクスチャを修正
-- [ ] `spec/README.md` / `ticket.md` / `cli.md` の構造記述を更新
+- [x] `lib/ticket.ts`: `ticketsFile(root, specType)` / `archiveFile(root, specType, version)`
+- [x] `lib/ticket.ts`: `specType` フィールドを削除
+- [x] `lib/store.ts`: `loadSnapshot` を層別に読む。`computeProgress` / `syncProgress` / `clearTickets`
+- [x] `cli/ticket.ts`: `--type` が場所を決める
+- [x] テストのフィクスチャを修正（110 件維持）
+- [x] `spec/README.md` / `ticket.md` / `cli.md` の構造記述を更新
 
-**維持するもの**:
+**維持したもの**:
 
 - 過去バージョンの archive は読まない（bump で progress がリセットされる）
 - `bump` での progress 再計算
 - `resolvedIn`（置き場所と一致し、reopen の索引になる）
 
-### 10. init
+### 10. init → 実装済み
 
-- [ ] `init` コマンドの実装
-- [ ] フォーク手順をリポジトリ直下の `README.md` に書く（git 履歴の切り方など）
-- [ ] `scripts/apply.mjs`: `KEEP_LISTED` は空配列。`AGENTS.md` は INCLUDE、`README.md` は除外
+- [x] `scripts/init.mjs`（`prepare` から呼ばれる）
+- [x] `spec/lib/store.ts`: `initializeProject` / `isInitialized` / `initializedMarker`
+- [x] フォーク手順をリポジトリ直下の `README.md` に記載
+- [x] `apply.mjs`: `KEEP_LISTED` は空配列。`AGENTS.md` は INCLUDE、`README.md` は除外
 
-**`init` がやること**:
+**init がやること**:
 
-クローンした時点でスターター自身のチケットが溜まっている（ハーネスを作るために
-切ったもの）。チケットを消すと `progress` の算出元が無くなるので、両方を面倒見る。
+| #   | 対象                      | 処理                                                                |
+| --- | ------------------------- | ------------------------------------------------------------------- |
+| 1   | `spec/tickets/<層>/` 両層 | 全消去（`clearTickets`）                                            |
+| 2   | `closed` の build         | 削除（参照が残っていれば拒否）                                      |
+| 3   | 残った build の `note`    | 「スターターから継承」に書き換え                                    |
+| 4   | product                   | `name` は `package.json` の name。`goal` / `nongoal` / `build` は空 |
+| 5   | `progress`                | 再計算（チケット0件なので absent になる）                           |
+| 6   | `spec/initialized.json`   | 印を書く                                                            |
 
-| #   | 対象                      | 処理                                                                   |
-| --- | ------------------------- | ---------------------------------------------------------------------- |
-| 1   | `spec/tickets/<層>/` 両層 | 全消去（`clearTickets`）                                               |
-| 2   | harness の現行版          | `progress` を再計算（`syncProgress`。チケット0件なので absent になる） |
-| 3   | `closed` の build         | **削除する**（bump と同じ理屈）                                        |
-| 4   | product                   | `name` / `goal` / `nongoal` を書き換え、`build` は `[]`                |
-| 5   | 全 build の `note`        | 「スターターから継承」に書き換え                                       |
-| 6   | 過去版                    | 触らない                                                               |
+**判定（順に見る）**:
 
-**確定した詳細**:
+1. `PROJECT_STARTER` 環境変数がある → skip（**スターター自身**）
+2. `spec/initialized.json` がある → skip（**既に init 済み**）
+3. `package.json.name` が空か `project-starter` → 案内して skip（**名前を先に変えさせる**）
+4. それ以外 → 実行
 
-- 未 init の判定は「チケットが残っているか」を使う（残っていればスターター自身の状態）
-- `note` は全 build 一律で書き換える。`retiring` も継承で正しい（プロジェクトにはまだ存在する）
-- `closed` は削除するので、「継承」が嘘になる問題は起きない
-- `--name` / `--goal` / `--nongoal` は必須
-- `--type` は受け付けない（両層を触る）
-- `--note` は不要（機械的な初期化）
-- チケットは両層とも消す（レイヤー1の痕跡を残さない）
+**スターター自身の判定に環境変数を使った理由**: `product.name` も `package.json.name` も
+クローン先と区別できない（どちらも `project-starter`）。`.envrc` は `.gitignore` 対象なので
+クローン先には配られず、設定の有無だけで確実に区別できる。
+
+**`initialized.json` を別ファイルにした理由**: `product/vN.json` に入れると `bump` が
+引き継ぎを考慮する必要がある。バージョンと無関係なプロジェクト全体の状態なので、
+`spec/` 直下に置いてバージョンの外に出した。
+
+**`product.name` を判定に使わなかった理由**: 利用者が先に `product` の名前を変えると
+「既に init 済み」と誤判定し、チケットや `note` が残ったままになる。`initialized` の
+有無なら、名前をどう変えても init すべきかどうかを正しく判定できる。
 
 ### 11. 実運用で発見された問題への対処
 
