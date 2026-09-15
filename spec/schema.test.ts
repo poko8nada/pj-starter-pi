@@ -20,7 +20,7 @@ function buildJson(overrides: Record<string, unknown> = {}): Record<string, unkn
   return {
     id: 'gate-a',
     name: 'A',
-    verify: 'A が動く',
+    verify: ['A が動く'],
     uses: [],
     status: { state: 'planned', text: '未着手' },
     ...overrides,
@@ -173,6 +173,46 @@ describe('build id の形式', () => {
 
   it('定数セグメントは形式では弾けない（ガイドで導く領域）', () => {
     expect(isValidBuildId('build-gate-a')).toBe(true);
+  });
+});
+
+describe('verify は条件の列', () => {
+  it('複数の条件を持てる', () => {
+    const { spec, issues } = parseSpec(
+      specJson([buildJson({ verify: ['A が動く', 'B が失敗する'] })]),
+      'test',
+    );
+    expect(issues).toEqual([]);
+    expect(spec?.build[0]?.verify).toEqual(['A が動く', 'B が失敗する']);
+  });
+
+  it('空配列を弾く（何をもって完了か言えない build は粒度が間違っている）', () => {
+    const { issues } = parseSpec(specJson([buildJson({ verify: [] })]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].verify')).toBe(true);
+  });
+
+  it('単一の文字列を弾く（列であることを強制する）', () => {
+    const { issues } = parseSpec(specJson([buildJson({ verify: 'A が動く' })]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].verify')).toBe(true);
+  });
+
+  it('同一 build 内の条件の重複を弾く（ticket が指す先が決まらない）', () => {
+    const { issues } = parseSpec(
+      specJson([buildJson({ verify: ['A が動く', 'A が動く'] })]),
+      'test',
+    );
+    expect(issues.some((issue) => issue.path === 'test.build[0].verify[1]')).toBe(true);
+  });
+
+  it('build をまたぐ同じ文言は許す（別の build の別の条件）', () => {
+    const { issues } = parseSpec(
+      specJson([
+        buildJson({ id: 'gate-a', verify: ['動く'] }),
+        buildJson({ id: 'gate-b', verify: ['動く'] }),
+      ]),
+      'test',
+    );
+    expect(issues).toEqual([]);
   });
 });
 

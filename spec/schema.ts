@@ -55,7 +55,11 @@ export interface BuildStatus {
 export interface Build {
   readonly id: string;
   readonly name: string;
-  readonly verify: string;
+  /**
+   * 観測できる結果の列。build が達成されたかを判定する単位で、ticket はこの1つを指す。
+   * 分割力の源: 散文1本だと継ぎ目が無く、ticket が build と1:1に collapse する。
+   */
+  readonly verify: readonly string[];
   readonly uses: readonly string[];
   readonly progress?: BuildProgress;
   readonly status: BuildStatus;
@@ -237,6 +241,30 @@ export function canTransition(from: BuildState, to: BuildState): boolean {
 export const TRANSITION_RULE =
   'planned に戻せるのは planned と building だけです。作って動いたものをプランには戻せません。';
 
+/**
+ * 観測できる結果の列を読む。空を許さず、同一 build 内の重複も弾く。
+ * 条件は ticket から文字列で参照されるので、重複すると指す先が決まらない。
+ */
+function readConditions(input: unknown, label: string, issues: SpecIssue[]): string[] | undefined {
+  const values = readStringArray(input, label, issues);
+  if (values === undefined) {
+    return undefined;
+  }
+  if (values.length === 0) {
+    issues.push({ path: label, message: 'verify には最低1つの条件が必要です' });
+    return undefined;
+  }
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    if (seen.has(value)) {
+      issues.push({ path: `${label}[${index}]`, message: `条件が重複しています: ${value}` });
+      continue;
+    }
+    seen.add(value);
+  }
+  return values;
+}
+
 /** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
 function readStatus(input: unknown, label: string, issues: SpecIssue[]): BuildStatus | undefined {
   if (!isRecord(input)) {
@@ -267,7 +295,7 @@ function readBuild(input: unknown, label: string, issues: SpecIssue[]): Build | 
   rejectUnknownKeys(input, BUILD_KEYS, label, issues);
   const id = readBuildId(input.id, `${label}.id`, issues);
   const name = readString(input.name, `${label}.name`, issues);
-  const verify = readString(input.verify, `${label}.verify`, issues);
+  const verify = readConditions(input.verify, `${label}.verify`, issues);
   const uses = readStringArray(input.uses, `${label}.uses`, issues);
 
   const beforeProgress = issues.length;

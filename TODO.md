@@ -281,25 +281,27 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 
 ### 1. `retiring` を追加
 
-- [ ] `schema.ts`: `BUILD_STATES` に `retiring` を追加
-- [ ] `cli.ts`: 遷移ガードを「`working/retiring/closed → planned` を拒否」に一般化
-- [ ] `schema.test.ts`: 5状態、遷移のケースを追加
-- [ ] `spec/README.md`: ライフサイクル図、`closed` の意味の変更、遷移規則
-- [ ] `AGENTS.md`: state の語彙を更新
+- [x] `schema.ts`: `BUILD_STATES` に `retiring` を追加
+- [x] `cli.ts`: 遷移ガードを「`working/retiring/closed → planned` を拒否」に一般化
+- [x] `schema.test.ts`: 5状態、遷移のケースを追加
+- [x] `spec/README.md`: ライフサイクル図、`closed` の意味の変更、遷移規則
+- [x] `AGENTS.md`: state の語彙を更新
 
 ### 2. `bump` の closed 落とし + `build:remove`
 
-- [ ] `cli.ts`: `bump` で `closed` を落とす
-- [ ] `cli.ts`: `build:remove` を追加（同じ参照ガード）
-- [ ] 参照ガード: open な ticket の `targets` か、他の build の `uses` が参照していれば拒否
-- [ ] 落とした/残したを理由付きで表示
-- [ ] `schema.test.ts` / `spec/README.md` を更新
+- [x] `cli.ts`: `bump` で `closed` を落とす
+- [x] `cli.ts`: `build:remove` を追加（同じ参照ガード）
+- [x] 参照ガード: open な ticket の `targets` か、他の build の `uses` が参照していれば拒否
+      （ticket は未実装なので `uses` のみ。共通の `assertRemovable` に集約済み）
+- [x] 落とした/残したを理由付きで表示
+- [x] `schema.test.ts` / `spec/README.md` を更新
 
 ### 3. `verify` を条件の列にする
 
-- [ ] `schema.ts`: `Build.verify` を `string[]` に変更。同一 build 内の重複を拒否
-- [ ] `spec/harness/v001.json`: 9 件の `verify` を配列化（必要なものは分割）
-- [ ] `schema.test.ts` / `spec/README.md` を更新
+- [x] `schema.ts`: `Build.verify` を `string[]` に変更。同一 build 内の重複を拒否
+- [x] `spec/harness/v001.json`: 9 件の `verify` を配列化（9 build / 18 条件）
+- [x] `schema.test.ts` / `spec/README.md` を更新
+- [x] `cli.ts`: `--verify` を繰り返し指定で受ける（カンマ区切りにしない）
 
 ### 4. チケット本体
 

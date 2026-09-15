@@ -23,9 +23,7 @@ import {
 
 // spec/ の CLI。JSON の読み書きは schema.ts の関数だけを通す。
 // ここには「引数の解釈」「遷移の制約」「表示」以外を書かない。
-//
-// 遷移の制約を schema.ts ではなくここに置く理由:
-// parseSpec は「前の状態」を知らないので、単体では判定できない。
+// 遷移の制約を schema.ts ではなくここに置く理由: parseSpec は「前の状態」を知らないので、単体では判定できない。
 
 const USAGE = `spec - spec/ の JSON を検証・更新する
 
@@ -40,10 +38,14 @@ const USAGE = `spec - spec/ の JSON を検証・更新する
   bump                         現行版の次のバージョンを作る（build は引き継ぐ。closed は落とす）
 
 build の更新:
-  build:add --id <id> --name <name> --verify <text> [--uses <id,id>] [--state <state>] [--text <text>]
-  build:set --id <id> [--name <name>] [--verify <text>] [--uses <id,id>] [--state <state>] [--text <text>]
+  build:add --id <id> --name <name> --verify <text> [--verify <text>...] [--uses <id,id>] [--state <state>] [--text <text>]
+  build:set --id <id> [--name <name>] [--verify <text>...] [--uses <id,id>] [--state <state>] [--text <text>]
   build:rename --id <id> --to <new-id>
   build:remove --id <id>       参照が1つも無いときだけ削除できる
+
+verify は「観測できる結果」の列。--verify を繰り返して複数書く（少なくとも1つ必要）。
+カンマでは区切らない（条件の文に読点が入りうるため）。
+build:set で --verify を渡すと列全体を置き換える。
 
 build:set は指定したフラグだけを変更する（省略したものは現状のまま）。
 1つも指定しなければエラーになる。
@@ -55,11 +57,14 @@ id は小文字とハイフンで2セグメント以上。先頭は種別。${BU
   --version <n>                対象バージョン（既定: 現行版）
   --root <path>                リポジトリのルート（既定: カレント）`;
 
+/** parseArgs が返す値。--verify だけ複数指定できるので配列になりうる。 */
+type OptionValue = string | string[] | undefined;
+
 interface Options {
   readonly root: string;
   readonly specType: SpecType;
   readonly version: number | undefined;
-  readonly values: Record<string, string | undefined>;
+  readonly values: Record<string, OptionValue>;
 }
 
 function fail(message: string): never {
@@ -96,7 +101,7 @@ function parseOptions(args: readonly string[]): Options {
       to: { type: 'string' },
       id: { type: 'string' },
       name: { type: 'string' },
-      verify: { type: 'string' },
+      verify: { type: 'string', multiple: true },
       uses: { type: 'string' },
       state: { type: 'string' },
       text: { type: 'string' },
@@ -119,8 +124,33 @@ function has(options: Options, key: string): boolean {
 
 function requireValue(options: Options, key: string, flag: string): string {
   const value = options.values[key];
-  if (value === undefined || value === '') {
+  if (typeof value !== 'string' || value === '') {
     fail(`${flag} は必須です`);
+  }
+  return value;
+}
+
+/**
+ * --verify の列を読む。--verify を繰り返して指定する。
+ * カンマで区切らないのは、条件の文に読点が入りうるため。
+ */
+function readVerify(options: Options, flag: string): string[] {
+  const value = options.values.verify;
+  const list = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  const conditions = list.map((item) => item.trim()).filter((item) => item !== '');
+  if (conditions.length === 0) {
+    fail(`${flag} を1つ以上指定してください（--verify を繰り返す）`);
+  }
+  return conditions;
+}
+
+/**
+ * 単一値のフラグを読む。--verify だけが複数指定を許すので、他のフラグに配列が来たら入口で拒否する。
+ */
+function single(options: Options, key: string): string | undefined {
+  const value = options.values[key];
+  if (Array.isArray(value)) {
+    fail(`--${key} は1回だけ指定できます`);
   }
   return value;
 }
@@ -317,11 +347,11 @@ async function runBuildAdd(options: Options): Promise<void> {
   const added: Build = {
     id,
     name: requireValue(options, 'name', '--name'),
-    verify: requireValue(options, 'verify', '--verify'),
-    uses: readUses(options.values.uses),
+    verify: readVerify(options, '--verify'),
+    uses: readUses(single(options, 'uses')),
     status: {
       // 新規 build は定義上プランから始まる。更新系の「省略＝変更しない」とは別。
-      state: has(options, 'state') ? readState(options.values.state) : 'planned',
+      state: has(options, 'state') ? readState(single(options, 'state')) : 'planned',
       text: requireValue(options, 'text', '--text'),
     },
   };
@@ -353,14 +383,16 @@ async function runBuildSet(options: Options): Promise<void> {
     );
   }
 
-  const nextState = has(options, 'state') ? readState(options.values.state) : current.status.state;
+  const nextState = has(options, 'state')
+    ? readState(single(options, 'state'))
+    : current.status.state;
   assertTransition(current.status.state, nextState);
 
   const updated: Build = {
     ...current,
     name: has(options, 'name') ? requireValue(options, 'name', '--name') : current.name,
-    verify: has(options, 'verify') ? requireValue(options, 'verify', '--verify') : current.verify,
-    uses: has(options, 'uses') ? readUses(options.values.uses) : current.uses,
+    verify: has(options, 'verify') ? readVerify(options, '--verify') : current.verify,
+    uses: has(options, 'uses') ? readUses(single(options, 'uses')) : current.uses,
     status: {
       state: nextState,
       text: has(options, 'text') ? requireValue(options, 'text', '--text') : current.status.text,

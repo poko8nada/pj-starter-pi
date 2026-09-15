@@ -42,7 +42,10 @@ This is an excerpt of `harness/v001.json` as it actually exists.
     {
       "id": "gate-quality",
       "name": "quality-gate 拡張",
-      "verify": "edit/write の後、編集されたファイルに対して format / lint / typecheck が自動で走り、失敗が followUp としてエージェントに返る",
+      "verify": [
+        "edit/write の後、編集されたファイルに対して format / lint / typecheck が自動で走る",
+        "チェックが失敗すると、その内容が followUp としてエージェントに返る"
+      ],
       "uses": ["script-typecheck-staged"],
       "status": { "state": "working", "text": "スターターとして稼働中" }
     }
@@ -60,7 +63,7 @@ This is an excerpt of `harness/v001.json` as it actually exists.
 
 Not a "feature". Pages, authentication, APIs, and shared layouts all sit at the same level of abstraction, because they are all things you build and all things you can verify.
 
-- It must be **verifiable as a unit**. If you cannot write `verify`, the granularity is wrong.
+- It must be **verifiable as a unit**, and `verify` must list the conditions that make it done. If you cannot write one, the granularity is wrong.
 - **Omit what the code already tells you.** The stack is in `package.json`; skills are visible in the directory.
 - But **do write dependencies**, because no single file reveals them.
 
@@ -108,10 +111,29 @@ Where the list is thin, extend it here. Adding a kind is a one-line change; bein
 
 | Field      | Meaning                                                                                                                                                |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `verify`   | What counts as done. Free text. The thing that actually judges it is the ticket                                                                        |
+| `verify`   | **The conditions that make it done.** See below                                                                                                        |
 | `uses`     | One-directional reference, written by the user to the used. **It does not enforce ordering** — it does not mean "cannot start until the other is done" |
 | `progress` | Computed from tickets. `{ done, total }`. **Absent when there are no tickets**                                                                         |
 | `status`   | Declared by hand. `{ state, text }`                                                                                                                    |
+
+### `verify` is a list of conditions
+
+Each entry is **one observable result**. Not a paragraph describing the build.
+
+```json
+"verify": [
+  "有効な資格情報でセッションが発行される",
+  "無効な資格情報では 401 が返る"
+]
+```
+
+This is where splitting power comes from. A single paragraph has no seams, so a ticket can only mirror it one-to-one and you end up with exactly one ticket per build. Conditions are seams: a ticket names the one condition it moves forward.
+
+Conditions are also what `verify`-ability checks against: if you cannot write one as an observable result, that build has the wrong granularity.
+
+Rules: at least one condition, no empty strings, and **no duplicates within the same build** (a ticket refers to a condition by its text, so a duplicate makes the referent ambiguous). The same wording may appear in different builds — those are different conditions.
+
+`--verify` is repeated to pass several. It is not comma-separated, because a condition may contain a comma.
 
 ### `status` is declared, `progress` is computed
 
@@ -158,14 +180,15 @@ The ends mean "it is not there"; the three in between mean "it is there".
 
 ### What validation enforces, and what it does not
 
-| Enforced                                      | Only guided                             |
-| --------------------------------------------- | --------------------------------------- |
-| `id` format: lowercase, hyphens, 2+ segments  | which kind to start with                |
-| unique `id` within a file                     | whether the name reads well             |
-| no unknown fields, no empty strings           | whether `verify` is actually verifiable |
-| `uses` resolves to a real build, never itself | whether the dependency is real          |
-| `state` in the vocabulary                     | whether the declared state is true      |
-| `progress.total > 0` and `done <= total`      | —                                       |
+| Enforced                                          | Only guided                              |
+| ------------------------------------------------- | ---------------------------------------- |
+| `id` format: lowercase, hyphens, 2+ segments      | which kind to start with                 |
+| unique `id` within a file                         | whether the name reads well              |
+| `verify`: 1+ conditions, no duplicates in a build | whether a condition is really observable |
+| no unknown fields, no empty strings               | —                                        |
+| `uses` resolves to a real build, never itself     | whether the dependency is real           |
+| `state` in the vocabulary                         | whether the declared state is true       |
+| `progress.total > 0` and `done <= total`          | —                                        |
 
 `state` transitions are checked by the CLI rather than the schema, because the schema cannot see the previous state. The rule is one line:
 
@@ -183,7 +206,7 @@ Never edit the JSON directly. Only the functions in `spec/schema.ts` read and wr
 node spec/cli.ts validate                  # validate current + all historical versions
 node spec/cli.ts show                      # print the current version
 node spec/cli.ts bump                      # next version, builds carried over
-node spec/cli.ts build:add --id auth-login --name "Login" --verify "..." --text "not started"
+node spec/cli.ts build:add --id auth-login --name "Login" --verify "..." --verify "..." --text "not started"
 node spec/cli.ts build:set --id auth-login --state building --text "why"
 node spec/cli.ts build:rename --id auth-login --to auth-session
 node spec/cli.ts build:remove --id obsolete-thing
