@@ -1,9 +1,23 @@
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
+import {
+  DocumentError,
+  formatIssues,
+  isMemberOf,
+  isRecord,
+  messageOf,
+  readCount,
+  readJson,
+  readString,
+  readStringArray,
+  rejectUnknownKeys,
+  writeJson,
+  type Issue,
+} from './document.ts';
 
-// spec の語彙・型・検証・読み書きをここに集約する。
+// spec（product / harness）の語彙・型・検証・読み書き。
 // 書き込み経路をこのファイルの関数だけに絞ることで、検証を通らない JSON が spec/ に生まれる余地をなくす。
-// ここを変えると型と実行時検証の両方が切り替わる。CLI は必ずこの語彙を通す。
+// 共通のガードと I/O は document.ts にある。
 
 /** spec の2層。product は提供物、harness はそれを運用するメタ層。 */
 export const SPEC_TYPES = ['product', 'harness'] as const;
@@ -23,17 +37,46 @@ export type SpecType = (typeof SPEC_TYPES)[number];
 export const BUILD_STATES = ['planned', 'building', 'working', 'retiring', 'closed'] as const;
 export type BuildState = (typeof BUILD_STATES)[number];
 
+export const BUILD_STATE_MEANING: Record<BuildState, string> = {
+  planned: 'プランだけ',
+  building: '作っている最中',
+  working: '完成して動いている',
+  retiring: 'まだあるが、消す作業中',
+  closed: '無くなった',
+};
+
+/**
+ * 起きたことを消す移動を禁止する。
+ * 「一度作って動いたものが、計画だけだったことになる」のは記録の否定になる。
+ * 前進（飛ばすのも可）と巻き戻し（building に戻す、retiring をやめる）は許す。
+ */
+export function canTransition(from: BuildState, to: BuildState): boolean {
+  return !(to === 'planned' && from !== 'planned' && from !== 'building');
+}
+
+/** 禁止される移動の説明。CLI のエラー文に使う。 */
+export const TRANSITION_RULE =
+  'planned に戻せるのは planned と building だけです。作って動いたものをプランには戻せません。';
+
 /**
  * id の形。小文字とハイフンのみで、2セグメント以上。
  * 先頭セグメントは「何として外から見えるか」の種別（page, api, cli, gate など）。
  * 種別の語彙はここでは縛らない。まず形だけを矯正し、意味は README の例で導く。
  */
-const BUILD_ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+const ID_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const MIN_ID_SEGMENTS = 2;
 
 /** id の書き方の例。検証違反のメッセージにそのまま差し込む。 */
 export const BUILD_ID_HINT =
   '例: page-home, auth-login, api-user-create, cli-spec, gate-quality, hook-lefthook';
+
+/** 形（小文字・ハイフン区切り・2セグメント以上）だけを見る。種別の意味は検証しない。 */
+export function isValidBuildId(value: string): boolean {
+  if (!ID_PATTERN.test(value)) {
+    return false;
+  }
+  return value.split('-').length >= MIN_ID_SEGMENTS;
+}
 
 // ---- 型 ----
 
@@ -72,115 +115,76 @@ export interface Spec {
   readonly build: readonly Build[];
 }
 
-export interface SpecIssue {
-  readonly path: string;
-  readonly message: string;
-}
-
 /** 検証結果。問題が1件でもあれば spec は undefined になる。 */
 export interface SpecValidation {
   readonly spec: Spec | undefined;
-  readonly issues: readonly SpecIssue[];
-}
-
-export class SpecError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'SpecError';
-  }
-}
-
-// ---- 基本ガード ----
-
-/** 例外を1行のメッセージに正規化する。 */
-export function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function isRecord(input: unknown): input is Record<string, unknown> {
-  return typeof input === 'object' && input !== null && !Array.isArray(input);
+  readonly issues: readonly Issue[];
 }
 
 export function isSpecType(value: unknown): value is SpecType {
-  return typeof value === 'string' && (SPEC_TYPES as readonly string[]).includes(value);
-}
-
-function isBuildState(value: unknown): value is BuildState {
-  return typeof value === 'string' && (BUILD_STATES as readonly string[]).includes(value);
-}
-
-/** 形（小文字・ハイフン区切り・2セグメント以上）だけを見る。種別の意味は検証しない。 */
-export function isValidBuildId(value: string): boolean {
-  if (!BUILD_ID_PATTERN.test(value)) {
-    return false;
-  }
-  return value.split('-').length >= MIN_ID_SEGMENTS;
+  return isMemberOf(SPEC_TYPES, value);
 }
 
 // ---- フィールド単位の読み取り ----
 
-function rejectUnknownKeys(
-  input: Record<string, unknown>,
-  allowed: readonly string[],
-  label: string,
-  issues: SpecIssue[],
-): void {
-  const allowedSet = new Set(allowed);
-  for (const key of Object.keys(input)) {
-    if (!allowedSet.has(key)) {
-      issues.push({
-        path: `${label}.${key}`,
-        message: `未知のフィールドです。許可: ${allowed.join(', ')}`,
-      });
-    }
-  }
-}
-
-function readString(input: unknown, label: string, issues: SpecIssue[]): string | undefined {
-  if (typeof input !== 'string') {
-    issues.push({ path: label, message: '文字列である必要があります' });
+/**
+ * 観測できる結果の列を読む。空を許さず、同一 build 内の重複も弾く。
+ * 条件は ticket から文字列で参照されるので、重複すると指す先が決まらない。
+ */
+function readConditions(input: unknown, label: string, issues: Issue[]): string[] | undefined {
+  const values = readStringArray(input, label, issues);
+  if (values === undefined) {
     return undefined;
   }
-  // 前後の空白を落とす。trim は半角・全角・タブ・改行・NBSP をすべて落とす。
-  // 内部の空白は残す（書き手の意図かもしれないので膣しない）。
-  // 正規化はここだけで行い、読み込み時はファイルの値をそのまま使う。
-  const value = input.trim();
-  if (value === '') {
-    // 空白だけの値は「書き忘れ」と区別できないため弾く。空配列は許す。
-    issues.push({ path: label, message: '空文字は許可されません' });
+  if (values.length === 0) {
+    issues.push({ path: label, message: 'verify には最低1つの条件が必要です' });
+    return undefined;
+  }
+  const seen = new Set<string>();
+  for (const [index, value] of values.entries()) {
+    if (seen.has(value)) {
+      issues.push({ path: `${label}[${index}]`, message: `条件が重複しています: ${value}` });
+      continue;
+    }
+    seen.add(value);
+  }
+  return values;
+}
+
+function readBuildId(input: unknown, label: string, issues: Issue[]): string | undefined {
+  const value = readString(input, label, issues);
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isValidBuildId(value)) {
+    issues.push({
+      path: label,
+      message: `id の形式が不正です: ${value}。小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
+    });
     return undefined;
   }
   return value;
 }
 
-function readStringArray(input: unknown, label: string, issues: SpecIssue[]): string[] | undefined {
-  if (!Array.isArray(input)) {
-    issues.push({ path: label, message: '配列である必要があります' });
+/** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
+function readStatus(input: unknown, label: string, issues: Issue[]): BuildStatus | undefined {
+  if (!isRecord(input)) {
+    issues.push({ path: label, message: 'オブジェクトである必要があります' });
     return undefined;
   }
-  const values: string[] = [];
-  for (const [index, item] of input.entries()) {
-    const value = readString(item, `${label}[${index}]`, issues);
-    if (value !== undefined) {
-      values.push(value);
-    }
-  }
-  return values;
-}
-
-function readCount(input: unknown, label: string, issues: SpecIssue[]): number | undefined {
-  if (typeof input !== 'number' || !Number.isInteger(input) || input < 0) {
-    issues.push({ path: label, message: '0 以上の整数である必要があります' });
+  rejectUnknownKeys(input, ['state', 'text'], label, issues);
+  if (!isMemberOf(BUILD_STATES, input.state)) {
+    issues.push({
+      path: `${label}.state`,
+      message: `次のいずれかである必要があります: ${BUILD_STATES.join(', ')}`,
+    });
     return undefined;
   }
-  return input;
+  const text = readString(input.text, `${label}.text`, issues);
+  return text === undefined ? undefined : { state: input.state, text };
 }
 
-function readProgress(
-  input: unknown,
-  label: string,
-  issues: SpecIssue[],
-): BuildProgress | undefined {
+function readProgress(input: unknown, label: string, issues: Issue[]): BuildProgress | undefined {
   // フィールドごと省略されている状態が「ticket 0件」を意味する
   if (input === undefined) {
     return undefined;
@@ -209,89 +213,11 @@ function readProgress(
   return { done, total };
 }
 
-function readBuildId(input: unknown, label: string, issues: SpecIssue[]): string | undefined {
-  const value = readString(input, label, issues);
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isValidBuildId(value)) {
-    issues.push({
-      path: label,
-      message: `id の形式が不正です: ${value}。小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
-    });
-    return undefined;
-  }
-  return value;
-}
-
-export const BUILD_STATE_MEANING: Record<BuildState, string> = {
-  planned: 'プランだけ',
-  building: '作っている最中',
-  working: '完成して動いている',
-  retiring: 'まだあるが、消す作業中',
-  closed: '無くなった',
-};
-
-/**
- * 起きたことを消す移動を禁止する。
- * 「一度作って動いたものが、計画だけだったことになる」のは記録の否定になる。
- * 前進（飛ばすのも可）と巻き戻し（building に戻す、retiring をやめる）は許す。
- */
-export function canTransition(from: BuildState, to: BuildState): boolean {
-  return !(to === 'planned' && from !== 'planned' && from !== 'building');
-}
-
-/** 禁止される移動の説明。CLI のエラー文に使う。 */
-export const TRANSITION_RULE =
-  'planned に戻せるのは planned と building だけです。作って動いたものをプランには戻せません。';
-
-/**
- * 観測できる結果の列を読む。空を許さず、同一 build 内の重複も弾く。
- * 条件は ticket から文字列で参照されるので、重複すると指す先が決まらない。
- */
-function readConditions(input: unknown, label: string, issues: SpecIssue[]): string[] | undefined {
-  const values = readStringArray(input, label, issues);
-  if (values === undefined) {
-    return undefined;
-  }
-  if (values.length === 0) {
-    issues.push({ path: label, message: 'verify には最低1つの条件が必要です' });
-    return undefined;
-  }
-  const seen = new Set<string>();
-  for (const [index, value] of values.entries()) {
-    if (seen.has(value)) {
-      issues.push({ path: `${label}[${index}]`, message: `条件が重複しています: ${value}` });
-      continue;
-    }
-    seen.add(value);
-  }
-  return values;
-}
-
-/** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
-function readStatus(input: unknown, label: string, issues: SpecIssue[]): BuildStatus | undefined {
-  if (!isRecord(input)) {
-    issues.push({ path: label, message: 'オブジェクトである必要があります' });
-    return undefined;
-  }
-  rejectUnknownKeys(input, ['state', 'text'], label, issues);
-  if (!isBuildState(input.state)) {
-    issues.push({
-      path: `${label}.state`,
-      message: `次のいずれかである必要があります: ${BUILD_STATES.join(', ')}`,
-    });
-    return undefined;
-  }
-  const text = readString(input.text, `${label}.text`, issues);
-  return text === undefined ? undefined : { state: input.state, text };
-}
-
 // ---- build / spec の検証 ----
 
 const BUILD_KEYS = ['id', 'name', 'verify', 'uses', 'progress', 'status'] as const;
 
-function readBuild(input: unknown, label: string, issues: SpecIssue[]): Build | undefined {
+function readBuild(input: unknown, label: string, issues: Issue[]): Build | undefined {
   if (!isRecord(input)) {
     issues.push({ path: label, message: 'オブジェクトである必要があります' });
     return undefined;
@@ -326,7 +252,7 @@ function readBuild(input: unknown, label: string, issues: SpecIssue[]): Build | 
   };
 }
 
-function readBuildList(input: unknown, label: string, issues: SpecIssue[]): Build[] | undefined {
+function readBuildList(input: unknown, label: string, issues: Issue[]): Build[] | undefined {
   if (!Array.isArray(input)) {
     issues.push({ path: label, message: '配列である必要があります' });
     return undefined;
@@ -353,7 +279,7 @@ function readBuildList(input: unknown, label: string, issues: SpecIssue[]): Buil
  * uses の参照を検証する。
  * build は削除しない方針なので、参照切れは常に異常として弾く。
  */
-function validateReferences(builds: readonly Build[], label: string, issues: SpecIssue[]): void {
+function validateReferences(builds: readonly Build[], label: string, issues: Issue[]): void {
   const ids = new Set(builds.map((build) => build.id));
   for (const [index, build] of builds.entries()) {
     for (const [usedIndex, used] of build.uses.entries()) {
@@ -384,7 +310,7 @@ export function parseSpec(input: unknown, label: string): SpecValidation {
       issues: [{ path: label, message: 'オブジェクトである必要があります' }],
     };
   }
-  const issues: SpecIssue[] = [];
+  const issues: Issue[] = [];
   rejectUnknownKeys(input, ['name', 'goal', 'nongoal', 'build'], label, issues);
   const name = readString(input.name, `${label}.name`, issues);
   const goal = readStringArray(input.goal, `${label}.goal`, issues);
@@ -439,47 +365,23 @@ export async function listVersions(root: string, specType: SpecType): Promise<nu
 export async function currentVersion(root: string, specType: SpecType): Promise<number> {
   const latest = (await listVersions(root, specType)).at(-1);
   if (latest === undefined) {
-    throw new SpecError(`spec/${specType}/ にバージョンファイルがありません`);
+    throw new DocumentError(`spec/${specType}/ にバージョンファイルがありません`);
   }
   return latest;
 }
 
 // ---- 読み書き ----
 
-async function readText(file: string): Promise<string> {
-  try {
-    return await readFile(file, 'utf8');
-  } catch (error) {
-    throw new SpecError(`読み込めません: ${file} (${messageOf(error)})`);
-  }
-}
-
 /** 指定バージョン（省略時は現行版）を読み、検証して返す。 */
 export async function readSpec(root: string, specType: SpecType, version?: number): Promise<Spec> {
   const resolved = version ?? (await currentVersion(root, specType));
   const file = versionFile(root, specType, resolved);
   const label = `${specType}/${formatVersion(resolved)}.json`;
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(await readText(file));
-  } catch (error) {
-    if (error instanceof SpecError) {
-      throw error;
-    }
-    throw new SpecError(`${label} が JSON として読めません: ${messageOf(error)}`);
-  }
-
-  const { spec, issues } = parseSpec(parsed, label);
+  const { spec, issues } = parseSpec(await readJson(file), label);
   if (spec === undefined) {
-    throw new SpecError(formatIssues(file, issues));
+    throw new DocumentError(formatIssues(file, issues));
   }
   return spec;
-}
-
-function formatIssues(file: string, issues: readonly SpecIssue[]): string {
-  const lines = issues.map((issue) => `  ${issue.path}: ${issue.message}`);
-  return `${file}\n${lines.join('\n')}`;
 }
 
 /**
@@ -493,12 +395,13 @@ export async function writeSpec(
   spec: unknown,
 ): Promise<string> {
   const label = `${specType}/${formatVersion(version)}.json`;
-  const { spec: validated, issues } = parseSpec(spec, label);
   const file = versionFile(root, specType, version);
+  const { spec: validated, issues } = parseSpec(spec, label);
   if (validated === undefined) {
-    throw new SpecError(formatIssues(file, issues));
+    throw new DocumentError(formatIssues(file, issues));
   }
-  await mkdir(dirname(file), { recursive: true });
-  await writeFile(file, `${JSON.stringify(validated, null, 2)}\n`, 'utf8');
-  return file;
+  return writeJson(file, validated);
 }
+
+/** messageOf を再輸出する（CLI が例外を1行にするために使う）。 */
+export { messageOf };

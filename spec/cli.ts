@@ -1,4 +1,5 @@
 import { parseArgs } from 'node:util';
+import { DocumentError, messageOf } from './document.ts';
 import {
   BUILD_ID_HINT,
   BUILD_STATES,
@@ -8,10 +9,8 @@ import {
   isSpecType,
   isValidBuildId,
   listVersions,
-  messageOf,
   readSpec,
   referencingBuilds,
-  SpecError,
   specTypeDir,
   TRANSITION_RULE,
   writeSpec,
@@ -507,7 +506,7 @@ try {
   await main();
 } catch (error) {
   // 検証エラーは多行になるため、そのまま見せる
-  const detail = error instanceof SpecError ? error.message : messageOf(error);
+  const detail = error instanceof DocumentError ? error.message : messageOf(error);
   console.error(detail);
   process.exit(1);
 }
