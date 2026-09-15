@@ -271,7 +271,7 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 - [x] `archive/vN.json` のファイル名の付け方（`v001.json` でよいか）
 - [x] reopen で過去版の progress が動く件（警告して許可、でよいか）
 - [x] チケットを削除したときの `progress` 再計算（常に許可でよいか）
-- [ ] **後回し**: `spec init` / フォーク手順（チケットの形が決まってから）
+- [ ] **後回し**: `spec init` / フォーク手順（チケットの形は確定済み。実装が残っている）
 - [x] `retiring` の語彙が適切か（`deprecating` / `removing` 等）
 - [x] `spec/harness` の build に `progress` を持たせるか（今は全部 absent）
 
@@ -279,50 +279,47 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 
 ## TODO（実装順）
 
-### 1. `retiring` を追加
+### 1〜3. retiring / build:remove / verify 条件列 → 完了
 
-- [x] `schema.ts`: `BUILD_STATES` に `retiring` を追加
-- [x] `cli.ts`: 遷移ガードを「`working/retiring/closed → planned` を拒否」に一般化
-- [x] `schema.test.ts`: 5状態、遷移のケースを追加
-- [x] `spec/README.md`: ライフサイクル図、`closed` の意味の変更、遷移規則
-- [x] `AGENTS.md`: state の語彙を更新
+### 4. チケット本体 → 完了
 
-### 2. `bump` の closed 落とし + `build:remove`
+- [x] `lib/store.ts` を新設（現行 spec + tickets の読み込み、cross-document 検証）
+- [x] `lib/ticket.ts`: Ticket の型・語彙・検証（`targets` の参照解決、`resolvedIn`）
+- [x] `targets` の上限（同一 build につき条件1つ）を検証
+- [x] `progress` の算出（`current` + `archive/vN`）
+- [x] `status: working` の被覆検査（ticket が 1 件以上ある build のみ）
+- [x] `cli/ticket.ts`: `ticket:add` / `ticket:set` / `ticket:remove` / `ticket:list`
+- [x] `progress` の突き合わせ検証（現行版のみ）
+- [x] テスト（110 件）
 
-- [x] `cli.ts`: `bump` で `closed` を落とす
-- [x] `cli.ts`: `build:remove` を追加（同じ参照ガード）
-- [x] 参照ガード: open な ticket の `targets` か、他の build の `uses` が参照していれば拒否
-      （ticket は未実装なので `uses` のみ。共通の `assertRemovable` に集約済み）
-- [x] 落とした/残したを理由付きで表示
-- [x] `schema.test.ts` / `spec/README.md` を更新
+### 5. archive と `resolvedIn` → 完了
 
-### 3. `verify` を条件の列にする
+- [x] done で即アーカイブ（`archive/vN.json`）
+- [x] reopen で `resolvedIn` を索引にして取り出す
+- [x] `build:rename` が現行 archive も書き換える
+- [x] `build:remove` の参照ガードが ticket も見る
 
-- [x] `schema.ts`: `Build.verify` を `string[]` に変更。同一 build 内の重複を拒否
-- [x] `spec/harness/v001.json`: 9 件の `verify` を配列化（9 build / 18 条件）
-- [x] `schema.test.ts` / `spec/README.md` を更新
-- [x] `cli.ts`: `--verify` を繰り返し指定で受ける（カンマ区切りにしない）
+### 6. ドキュメント → 完了
 
-### 4. チケット本体
+- [x] `spec/README.md`（索引） / `build.md` / `ticket.md` / `cli.md` に分割
+- [x] `AGENTS.md` を圧縮（要約を削り、README へのリンクだけ残す）
 
-- [ ] `store.ts` を新設（現行 spec + tickets の読み込み、cross-document 検証）
-- [ ] `schema.ts`: Ticket の型・語彙・検証（`targets` の参照解決、`resolvedIn`）
-- [ ] `schema.ts`: `targets` の上限（同一 build につき条件1つ）を検証
-- [ ] `store.ts`: `progress` の算出（`current` + `archive/vN`）
-- [ ] `store.ts`: `status: working` の被覆検査（ticket が 1 件以上ある build のみ）
-- [ ] `cli.ts`: `ticket:add` / `ticket:set` / `ticket:done` / `ticket:reopen` / `ticket:list`
-- [ ] `progress` の突き合わせ検証（現行版のみ）
-- [ ] `spec/tickets/current.json` を作成
-- [ ] テスト
+### 7. 構造の整理 → 完了
 
-### 5. archive と `resolvedIn`
+- [x] `spec/lib`（概念ごと）/ `spec/cli`（役割ごと）に分割
+- [x] `status` の入れ子を解消し、`note` を追加（build と ticket が同じ形に）
 
-- [ ] done で即アーカイブ（`archive/vN.json`）
-- [ ] reopen で `resolvedIn` を索引にして取り出す
-- [ ] `build:rename` が archive も書き換えるようにする
-- [ ] `build:remove` の参照ガードを archive も見るようにする
+### 8. 残り
 
-### 6. ドキュメント
+- [ ] `spec init` / フォーク手順（後回し）
+- [ ] 実運用で発見された問題への対処
 
-- [ ] `spec/README.md` のチケット節（build と ticket の表、粒度の問い、条件、保存構造）
-- [ ] `AGENTS.md` にチケットの存在を1行
+## 実装中の発見（既知の割り切り）
+
+- **過去バージョンの archive は読まない。** rename / remove は現行 archive にしか届かない。
+  「現行版とチケットが整合しているか」を常に検証できるようにするための割り切り。
+  `bump` のコメントに明記済み。
+- **`build:set` で `--verify` を変えると、ticket が参照する条件が消えうる。**
+  書く前に `assertCandidateAcceptable` が止めるので、参照切れは発生しない。
+- **`--note` は消える操作（remove）と機械的操作（bump）には要らない。**
+  残せないものに理由を要求しても記録にならないため。
