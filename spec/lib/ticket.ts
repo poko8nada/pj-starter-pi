@@ -10,7 +10,7 @@ import {
   writeJson,
   type Issue,
 } from './document.ts';
-import { isValidBuildId, SPEC_TYPES, type SpecType } from './schema.ts';
+import { isValidBuildId, SPEC_TYPES, type SpecType } from './spec.ts';
 
 // チケット（作業）の語彙・型・検証・読み書き。
 // build（作るもの）とは別の文書なので、schema.ts とは分ける。
@@ -42,6 +42,11 @@ export interface Ticket {
   readonly title: string;
   readonly verify: string;
   readonly status: TicketStatus;
+  /**
+   * 直近の変更の理由。title / verify / status / targets のどれを変えるときも必要。
+   * build の note と同じ意味で、build と ticket を同じ形に揃える。
+   */
+  readonly note: string;
   /**
    * 機械が書く。done になったときの現行バージョン番号。reopen で消える。
    * アーカイブの発見に使う索引でもある（どの archive から取り出すかが一意に決まる）。
@@ -185,6 +190,7 @@ const TICKET_KEYS = [
   'title',
   'verify',
   'status',
+  'note',
   'resolvedIn',
 ] as const;
 
@@ -206,6 +212,7 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
   const targets = readTargets(input.targets, `${label}.targets`, issues);
   const title = readString(input.title, `${label}.title`, issues);
   const verify = readString(input.verify, `${label}.verify`, issues);
+  const note = readString(input.note, `${label}.note`, issues);
   const status = input.status;
   if (!isTicketStatus(status)) {
     issues.push({
@@ -216,6 +223,9 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
   const resolvedIn = readResolvedIn(input.resolvedIn, `${label}.resolvedIn`, issues);
 
   if (id === undefined || targets === undefined || title === undefined || verify === undefined) {
+    return undefined;
+  }
+  if (note === undefined) {
     return undefined;
   }
   if (!isMemberOf(SPEC_TYPES, specType) || !isTicketStatus(status)) {
@@ -246,6 +256,7 @@ function readTicket(input: unknown, label: string, issues: Issue[]): Ticket | un
     title,
     verify,
     status,
+    note,
     ...(resolvedIn === undefined ? {} : { resolvedIn }),
   };
 }

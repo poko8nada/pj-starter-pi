@@ -14,7 +14,8 @@
         "チェックが失敗すると、その内容が followUp としてエージェントに返る"
       ],
       "uses": ["script-typecheck-staged"],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "ext-sound-notify",
@@ -24,7 +25,8 @@
         "ターン完了時に、設定に従って音と cmux 通知が出る"
       ],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "script-typecheck-staged",
@@ -34,7 +36,8 @@
         "違反があれば非ゼロで終了する"
       ],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "hook-lefthook",
@@ -44,7 +47,8 @@
         "pre-push で全体の typecheck と test が走る"
       ],
       "uses": ["script-typecheck-staged"],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "config-lint-format",
@@ -54,14 +58,16 @@
         "oxfmt --check がリポジトリ全体で通り、違反時は非ゼロで終了する"
       ],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "config-test",
       "name": "テスト実行基盤",
       "verify": ["vitest がテストを検出して実行する", "失敗時に非ゼロで終了する"],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "ci-pullfrog",
@@ -70,7 +76,8 @@
         "workflow_dispatch でプロンプトを渡すと、GitHub Actions 上でエージェントが実行される"
       ],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "doc-agents",
@@ -80,7 +87,8 @@
         "spec/README.md にモデル・語彙・コマンドが書かれている"
       ],
       "uses": ["cli-spec"],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     },
     {
       "id": "cli-spec",
@@ -91,7 +99,8 @@
         "検証に失敗したときはファイルを書かない"
       ],
       "uses": [],
-      "status": { "state": "working", "text": "スターターとして稼働中" }
+      "status": "working",
+      "note": "スターターとして稼働中"
     }
   ]
 }

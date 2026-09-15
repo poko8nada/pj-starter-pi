@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseSpec, type Spec } from './schema.ts';
+import { parseSpec, type Spec } from './spec.ts';
 import { computeProgress, removalBlockers, validateSnapshot, type Snapshot } from './store.ts';
 import { parseTicketFile, type Ticket } from './ticket.ts';
 
@@ -12,7 +12,8 @@ function buildJson(id: string, verify: string[], state = 'working'): Record<stri
     name: id,
     verify,
     uses: [],
-    status: { state, text: 'テスト' },
+    status: state,
+    note: 'テスト',
   };
 }
 
@@ -67,6 +68,7 @@ function ticket(build: string, condition: string | null, status: string, resolve
     title: 'T',
     verify: 'V',
     status,
+    note: 'テスト',
     ...(resolvedIn === undefined ? {} : { resolvedIn }),
   };
 }
@@ -108,6 +110,7 @@ describe('computeProgress', () => {
           title: 'T',
           verify: 'V',
           status: 'done',
+          note: 'テスト',
           resolvedIn: 1,
         },
       ],

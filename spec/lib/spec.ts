@@ -88,13 +88,8 @@ export interface BuildProgress {
 
 /**
  * build の状態。チケットからは判定できないため宣言する。
- * state は語彙、text はなぜその状態なのかの説明。
+ * 語彙は BUILD_STATES。note は変更の理由で、状態の説明ではない。
  */
-export interface BuildStatus {
-  readonly state: BuildState;
-  readonly text: string;
-}
-
 export interface Build {
   readonly id: string;
   readonly name: string;
@@ -105,7 +100,13 @@ export interface Build {
   readonly verify: readonly string[];
   readonly uses: readonly string[];
   readonly progress?: BuildProgress;
-  readonly status: BuildStatus;
+  /** ライフサイクル上の位置。宣言値で、progress からは導出しない。 */
+  readonly status: BuildState;
+  /**
+   * 直近の変更の理由。name / verify / uses / status のどれを変えるときも必要。
+   * 「なぜその状態か」ではなく「なぜ変えたか」を持つ。状態そのものは status が表す。
+   */
+  readonly note: string;
 }
 
 export interface Spec {
@@ -166,22 +167,16 @@ function readBuildId(input: unknown, label: string, issues: Issue[]): string | u
   return value;
 }
 
-/** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
-function readStatus(input: unknown, label: string, issues: Issue[]): BuildStatus | undefined {
-  if (!isRecord(input)) {
-    issues.push({ path: label, message: 'オブジェクトである必要があります' });
-    return undefined;
-  }
-  rejectUnknownKeys(input, ['state', 'text'], label, issues);
-  if (!isMemberOf(BUILD_STATES, input.state)) {
+/** status は宣言値。語彙に入っていることだけを検証する。理由は note が持つ。 */
+function readBuildStatus(input: unknown, label: string, issues: Issue[]): BuildState | undefined {
+  if (!isMemberOf(BUILD_STATES, input)) {
     issues.push({
-      path: `${label}.state`,
+      path: label,
       message: `次のいずれかである必要があります: ${BUILD_STATES.join(', ')}`,
     });
     return undefined;
   }
-  const text = readString(input.text, `${label}.text`, issues);
-  return text === undefined ? undefined : { state: input.state, text };
+  return input;
 }
 
 function readProgress(input: unknown, label: string, issues: Issue[]): BuildProgress | undefined {
@@ -215,7 +210,7 @@ function readProgress(input: unknown, label: string, issues: Issue[]): BuildProg
 
 // ---- build / spec の検証 ----
 
-const BUILD_KEYS = ['id', 'name', 'verify', 'uses', 'progress', 'status'] as const;
+const BUILD_KEYS = ['id', 'name', 'verify', 'uses', 'progress', 'status', 'note'] as const;
 
 function readBuild(input: unknown, label: string, issues: Issue[]): Build | undefined {
   if (!isRecord(input)) {
@@ -233,13 +228,14 @@ function readBuild(input: unknown, label: string, issues: Issue[]): Build | unde
   const progressOk = issues.length === beforeProgress;
 
   const beforeStatus = issues.length;
-  const status = readStatus(input.status, `${label}.status`, issues);
+  const status = readBuildStatus(input.status, `${label}.status`, issues);
   const statusOk = issues.length === beforeStatus;
+  const note = readString(input.note, `${label}.note`, issues);
 
   if (id === undefined || name === undefined || verify === undefined || uses === undefined) {
     return undefined;
   }
-  if (!progressOk || !statusOk || status === undefined) {
+  if (!progressOk || !statusOk || status === undefined || note === undefined) {
     return undefined;
   }
   return {
@@ -249,6 +245,7 @@ function readBuild(input: unknown, label: string, issues: Issue[]): Build | unde
     uses,
     ...(progress === undefined ? {} : { progress }),
     status,
+    note,
   };
 }
 

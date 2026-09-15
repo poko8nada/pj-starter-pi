@@ -10,7 +10,7 @@ import {
   SPEC_TYPES,
   type BuildState,
   type Spec,
-} from './schema.ts';
+} from './spec.ts';
 
 // spec/ の語彙・型・検証を試す単体テスト。
 // 外部依存なしで回るよう、JSON の形をそのまま parseSpec に渡す。
@@ -22,7 +22,8 @@ function buildJson(overrides: Record<string, unknown> = {}): Record<string, unkn
     name: 'A',
     verify: ['A が動く'],
     uses: [],
-    status: { state: 'planned', text: '未着手' },
+    status: 'planned',
+    note: '未着手',
     ...overrides,
   };
 }
@@ -64,11 +65,11 @@ describe('parseSpec の受理', () => {
 
   it('closed を宣言できる', () => {
     const { spec, issues } = parseSpec(
-      specJson([buildJson({ status: { state: 'closed', text: 'スターター時点で実装済み' } })]),
+      specJson([buildJson({ status: 'closed', note: 'スターター時点で実装済み' })]),
       'test',
     );
     expect(issues).toEqual([]);
-    expect(spec?.build[0]?.status.state).toBe('closed');
+    expect(spec?.build[0]?.status).toBe('closed');
   });
 
   it('progress と status は独立している（全部 done でも state は宣言したまま）', () => {
@@ -76,13 +77,14 @@ describe('parseSpec の受理', () => {
       specJson([
         buildJson({
           progress: { done: 3, total: 3 },
-          status: { state: 'planned', text: 'チケットだけ先に起票した' },
+          status: 'planned',
+          note: 'チケットだけ先に起票した',
         }),
       ]),
       'test',
     );
     expect(issues).toEqual([]);
-    expect(spec?.build[0]?.status.state).toBe('planned');
+    expect(spec?.build[0]?.status).toBe('planned');
     expect(spec?.build[0]?.progress).toEqual({ done: 3, total: 3 });
   });
 
@@ -128,11 +130,11 @@ describe('遷移の規則', () => {
 
   it('retiring は宣言できる', () => {
     const { spec, issues } = parseSpec(
-      specJson([buildJson({ status: { state: 'retiring', text: '呼び出し側を移行中' } })]),
+      specJson([buildJson({ status: 'retiring', note: '呼び出し側を移行中' })]),
       'test',
     );
     expect(issues).toEqual([]);
-    expect(spec?.build[0]?.status.state).toBe('retiring');
+    expect(spec?.build[0]?.status).toBe('retiring');
   });
 });
 
@@ -265,25 +267,24 @@ describe('parseSpec の拒否', () => {
     expect(issues.some((issue) => issue.path === 'test.build[0].closed')).toBe(true);
   });
 
-  it('status の語彙外の state を弾く', () => {
-    const { issues } = parseSpec(
-      specJson([buildJson({ status: { state: 'done', text: 'x' } })]),
-      'test',
-    );
-    expect(issues.some((issue) => issue.path === 'test.build[0].status.state')).toBe(true);
+  it('status の語彙外の値を弾く', () => {
+    const { issues } = parseSpec(specJson([buildJson({ status: 'done' })]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].status')).toBe(true);
   });
 
-  it('status.text の欠落を弾く', () => {
-    const { issues } = parseSpec(specJson([buildJson({ status: { state: 'working' } })]), 'test');
-    expect(issues.some((issue) => issue.path === 'test.build[0].status.text')).toBe(true);
-  });
-
-  it('status の未知のフィールドを弾く', () => {
+  it('status の入れ子を弾く（平坦化したので、オブジェクトは不正）', () => {
     const { issues } = parseSpec(
-      specJson([buildJson({ status: { state: 'working', text: 'x', reason: 'y' } })]),
+      specJson([buildJson({ status: { state: 'working', text: 'x' } })]),
       'test',
     );
-    expect(issues.some((issue) => issue.path === 'test.build[0].status.reason')).toBe(true);
+    expect(issues.some((issue) => issue.path === 'test.build[0].status')).toBe(true);
+  });
+
+  it('note の欠落を弾く（変更には理由が要る）', () => {
+    const { note, ...withoutNote } = buildJson();
+    expect(note).toBe('未着手');
+    const { issues } = parseSpec(specJson([withoutNote]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].note')).toBe(true);
   });
 
   it('ticket 0件の progress を弾く（0/0 は書かない）', () => {
@@ -354,7 +355,8 @@ describe('referencingBuilds（削除の可否判定）', () => {
       buildJson({
         id: 'gate-b',
         uses: ['gate-a'],
-        status: { state: 'closed', text: '廃止' },
+        status: 'closed',
+        note: '廃止',
       }),
     ]);
     expect(referencingBuilds(spec, 'gate-a')).toEqual(['gate-b']);

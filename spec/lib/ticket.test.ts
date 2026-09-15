@@ -12,6 +12,7 @@ function ticketJson(overrides: Record<string, unknown> = {}): Record<string, unk
     title: 'ログインを実装',
     verify: '正しい資格情報でセッションが得られる',
     status: 'todo',
+    note: '未着手',
     ...overrides,
   };
 }

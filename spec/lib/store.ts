@@ -8,7 +8,7 @@ import {
   type Build,
   type Spec,
   type SpecType,
-} from './schema.ts';
+} from './spec.ts';
 import {
   archiveFile,
   emptyTicketFile,
@@ -148,6 +148,23 @@ function validateTargets(spec: Spec, tickets: readonly Ticket[], issues: Issue[]
  * verify の条件を変える変更（build:set）や id を変える変更（build:rename）は
  * チケットの参照を壊しうるので、書く前にここで止める。
  */
+/**
+ * 書き込み前の候補 spec がチケットと整合することを強制する。
+ * 引数解釈の層ではなくここに置くのは、「候補が受け入れ可能か」がドメインの判断で、
+ * フラグの解釈とは無関係だから。
+ */
+export function assertCandidateAcceptable(snapshot: Snapshot, spec: Spec): void {
+  const issues = validateCandidate(snapshot, spec);
+  if (issues.length > 0) {
+    throw new DocumentError(
+      formatIssues(
+        `spec/${snapshot.specType}/v${String(snapshot.version).padStart(3, '0')}.json`,
+        issues,
+      ),
+    );
+  }
+}
+
 export function validateCandidate(snapshot: Snapshot, spec: Spec): readonly Issue[] {
   const issues: Issue[] = [];
   validateTargets(spec, [...snapshot.open, ...snapshot.archived], issues);
@@ -165,7 +182,7 @@ export function validateCandidate(snapshot: Snapshot, spec: Spec): readonly Issu
  */
 function validateWorkingCoverage(snapshot: Snapshot, issues: Issue[]): void {
   for (const build of snapshot.spec.build) {
-    if (build.status.state !== 'working') {
+    if (build.status !== 'working') {
       continue;
     }
     const tickets = ticketsFor(snapshot.open, snapshot.archived, build.id);

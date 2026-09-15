@@ -7,7 +7,7 @@ import {
   single,
   type Options,
 } from './args.ts';
-import { loadSnapshot, persist, throwIfIssues, type Snapshot } from './store.ts';
+import { loadSnapshot, persist, throwIfIssues, type Snapshot } from '../lib/store.ts';
 import {
   formatTicketId,
   nextTicketNumber,
@@ -16,7 +16,7 @@ import {
   type Ticket,
   type TicketStatus,
   type TicketTarget,
-} from './ticket.ts';
+} from '../lib/ticket.ts';
 
 // ticket のコマンド。build のコマンド（cli.ts）とは別の文書を扱うので分ける。
 // チケットはバージョンに属さないが、done の行き先（archive/vN）が要るので現行版を読む。
@@ -106,6 +106,7 @@ export async function runTicketAdd(options: Options): Promise<void> {
     title: requireValue(options, 'title', '--title'),
     verify: requireSingleValue(options, 'verify', '--verify'),
     status: 'todo',
+    note: requireValue(options, 'note', '--note'),
   };
 
   await persist(snapshot, [...snapshot.open, ...snapshot.archived, ticket], snapshot.spec);
@@ -121,10 +122,11 @@ export async function runTicketSet(options: Options): Promise<void> {
     has(options, 'title') ||
     has(options, 'verify') ||
     has(options, 'status') ||
-    has(options, 'condition');
+    has(options, 'condition') ||
+    has(options, 'note');
   if (!touched) {
     fail(
-      'ticket:set には少なくとも1つ変更するフラグが必要です（--title / --verify / --status / --condition）',
+      'ticket:set には少なくとも1つ変更するフラグが必要です（--title / --verify / --status / --condition / --note）',
     );
   }
 
@@ -141,6 +143,7 @@ export async function runTicketSet(options: Options): Promise<void> {
       ? requireSingleValue(options, 'verify', '--verify')
       : current.verify,
     status,
+    note: requireValue(options, 'note', '--note'),
     // resolvedIn は done のときだけ持つ。機械が書く値なので、状態遷移に合わせてここで面倒を見る。
     ...(status === 'done' ? { resolvedIn: snapshot.version } : {}),
   };

@@ -1,18 +1,14 @@
 import { parseArgs } from 'node:util';
-import { DocumentError, formatIssues } from './document.ts';
 import {
   BUILD_ID_HINT,
   BUILD_STATES,
   canTransition,
-  formatVersion,
   isSpecType,
   isValidBuildId,
   TRANSITION_RULE,
   type BuildState,
-  type Spec,
   type SpecType,
-} from './schema.ts';
-import { validateCandidate, type Snapshot } from './store.ts';
+} from '../lib/spec.ts';
 
 // 引数の解釈と、フラグ単位の検証。
 // 「値が語彙に入っているか」「必須か」をここで確定させ、コマンド側は検証済みの値だけを扱う。
@@ -64,12 +60,11 @@ export function parseOptions(args: readonly string[]): Options {
       name: { type: 'string' },
       verify: { type: 'string', multiple: true },
       uses: { type: 'string' },
-      state: { type: 'string' },
-      text: { type: 'string' },
+      status: { type: 'string' },
+      note: { type: 'string' },
       build: { type: 'string', multiple: true },
       condition: { type: 'string', multiple: true },
       title: { type: 'string' },
-      status: { type: 'string' },
       all: { type: 'boolean' },
     },
     strict: true,
@@ -160,11 +155,11 @@ export function single(options: Options, key: string): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
-/** --state の値を語彙に突き合わせる。 */
-export function readState(raw: string | undefined): BuildState {
+/** --status の値を build の語彙に突き合わせる。 */
+export function readBuildStatus(raw: string | undefined): BuildState {
   const matched = BUILD_STATES.find((state) => state === raw);
   if (matched === undefined) {
-    fail(`--state は次のいずれかです: ${BUILD_STATES.join(', ')}（受け取った値: ${raw}）`);
+    fail(`--status は次のいずれかです: ${BUILD_STATES.join(', ')}（受け取った値: ${raw}）`);
   }
   return matched;
 }
@@ -200,17 +195,4 @@ export function assertTransition(from: BuildState, to: BuildState): void {
     return;
   }
   fail(`state を ${from} から planned には戻せません（${from} -> ${to}）\n  ${TRANSITION_RULE}`);
-}
-
-/**
- * 書き込み前の候補 spec がチケットと整合するかを確かめる。
- * 現行版を触るときだけ意味がある（過去版はチケットと一致しなくてよい）。
- */
-export function assertCandidateAcceptable(snapshot: Snapshot, spec: Spec): void {
-  const issues = validateCandidate(snapshot, spec);
-  if (issues.length > 0) {
-    throw new DocumentError(
-      formatIssues(`spec/${snapshot.specType}/${formatVersion(snapshot.version)}.json`, issues),
-    );
-  }
 }
