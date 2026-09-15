@@ -122,17 +122,23 @@ function has(options: Options, key: string): boolean {
   return options.values[key] !== undefined;
 }
 
+/**
+ * 必須フラグを読む。trim は schema でも行われるが、ここで先に行うことで
+ * 空白だけの入力をフラグ名付きで弾ける（JSON のパスではなく、打った語で伝える）。
+ */
 function requireValue(options: Options, key: string, flag: string): string {
   const value = options.values[key];
-  if (typeof value !== 'string' || value === '') {
+  if (typeof value !== 'string' || value.trim() === '') {
     fail(`${flag} は必須です`);
   }
-  return value;
+  return value.trim();
 }
 
 /**
  * --verify の列を読む。--verify を繰り返して指定する。
  * カンマで区切らないのは、条件の文に読点が入りうるため。
+ * trim は schema でも行われるが、ここで先に正規化して重複の早期検出と
+ * 空白だけの入力を正しく弾けるようにする。
  */
 function readVerify(options: Options, flag: string): string[] {
   const value = options.values.verify;
@@ -164,12 +170,16 @@ function readState(raw: string | undefined): BuildState {
   return matched;
 }
 
-/** --id の形を検証する。schema と同じ基準を入口でも適用して早く失敗させる。 */
+/**
+ * --id の形を検証する。schema と同じ基準を入口でも適用して早く失敗させる。
+ * trim も schema と同じ基準で先に行う。ここで揃えないと、同じ入力の扱いが
+ * 経路によって変わる（CLI では弾かれ、schema では通る）。
+ */
 function readId(options: Options, key: string, flag: string): string {
   const value = requireValue(options, key, flag);
   if (!isValidBuildId(value)) {
     fail(
-      `${flag} の形式が不正です: ${value}\n  小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
+      `${flag} の形式が不正です: ${value || '(空)'}\n  小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
     );
   }
   return value;

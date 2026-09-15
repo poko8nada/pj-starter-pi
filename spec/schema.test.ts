@@ -232,6 +232,34 @@ describe('parseSpec の拒否', () => {
     expect(issues.some((issue) => issue.path === 'test.build[0].name')).toBe(true);
   });
 
+  it('前後の空白は落とす', () => {
+    const { spec } = parseSpec(specJson([buildJson({ name: '  A  ' })]), 'test');
+    expect(spec?.build[0]?.name).toBe('A');
+  });
+
+  it.each(['   ', '\t', '\n', '\u3000', '\u00A0'])('空白だけの値（%j）を弾く', (blank) => {
+    const { issues } = parseSpec(specJson([buildJson({ name: blank })]), 'test');
+    expect(issues.some((issue) => issue.path === 'test.build[0].name')).toBe(true);
+  });
+
+  it('内部の空白は残す（書き手の意図かもしれない）', () => {
+    const { spec } = parseSpec(specJson([buildJson({ name: 'A  B' })]), 'test');
+    expect(spec?.build[0]?.name).toBe('A  B');
+  });
+
+  it('verify の条件も前後の空白を落とす', () => {
+    const { spec } = parseSpec(specJson([buildJson({ verify: ['  A が動く  '] })]), 'test');
+    expect(spec?.build[0]?.verify).toEqual(['A が動く']);
+  });
+
+  it('trim 後の重複を弾く（空白違いは同じ条件）', () => {
+    const { issues } = parseSpec(
+      specJson([buildJson({ verify: ['A が動く', '  A が動く  '] })]),
+      'test',
+    );
+    expect(issues.some((issue) => issue.path === 'test.build[0].verify[1]')).toBe(true);
+  });
+
   it('closed フィールドは廃止された（未知のフィールドとして弾く）', () => {
     const { issues } = parseSpec(specJson([buildJson({ closed: null })]), 'test');
     expect(issues.some((issue) => issue.path === 'test.build[0].closed')).toBe(true);

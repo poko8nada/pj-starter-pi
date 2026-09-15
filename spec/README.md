@@ -171,11 +171,19 @@ The ends mean "it is not there"; the three in between mean "it is there".
 
 `text` can go stale when tickets move `progress` without anyone touching `status`. This is accepted, the same way a stale `verify` is accepted: both are free text.
 
+### Whitespace
+
+Leading and trailing whitespace is trimmed on every string, **on input only**. A value that is nothing but whitespace is rejected, since it is indistinguishable from a forgotten value.
+
+Trimming happens in one place, `readString` in `schema.ts`, so it applies no matter which path wrote the value. Reading never trims: the file is the source of truth, and re-normalizing on read would make the in-memory shape disagree with what is on disk.
+
+Whitespace _inside_ a value is left alone. Two spaces in the middle may be what the writer meant.
+
 ### Rules
 
 - **Removing a build is `build:remove`, not a hand edit.** It refuses while anything still references the build by `uses`. Deleting by hand would leave those references dangling.
 - **Never delete a build to end it.** That is what `closed` means. `build:remove` is for a build that should never have existed (wrong granularity, created twice).
-- All fields are required. Empty arrays are allowed; empty strings are not, because they are indistinguishable from a forgotten value.
+- All fields are required. Empty arrays are allowed; empty strings are not, because they are indistinguishable from a forgotten value. Whitespace-only strings are not either.
 - `progress` is the only field that may be absent, and absence carries meaning.
 
 ### What validation enforces, and what it does not

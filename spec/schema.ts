@@ -141,12 +141,16 @@ function readString(input: unknown, label: string, issues: SpecIssue[]): string 
     issues.push({ path: label, message: '文字列である必要があります' });
     return undefined;
   }
-  if (input === '') {
-    // 空文字は「書き忘れ」と区別できないため弾く。空配列は許す。
+  // 前後の空白を落とす。trim は半角・全角・タブ・改行・NBSP をすべて落とす。
+  // 内部の空白は残す（書き手の意図かもしれないので膣しない）。
+  // 正規化はここだけで行い、読み込み時はファイルの値をそのまま使う。
+  const value = input.trim();
+  if (value === '') {
+    // 空白だけの値は「書き忘れ」と区別できないため弾く。空配列は許す。
     issues.push({ path: label, message: '空文字は許可されません' });
     return undefined;
   }
-  return input;
+  return value;
 }
 
 function readStringArray(input: unknown, label: string, issues: SpecIssue[]): string[] | undefined {
