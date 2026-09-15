@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   BUILD_STATES,
+  canTransition,
   formatVersion,
   isValidBuildId,
   parseSpec,
   readSpec,
   SPEC_TYPES,
+  type BuildState,
 } from './schema.ts';
 
 // spec/ の語彙・型・検証を試す単体テスト。
@@ -32,8 +34,8 @@ describe('語彙', () => {
     expect(SPEC_TYPES).toEqual(['product', 'harness']);
   });
 
-  it('status は4段階の state を持つ', () => {
-    expect(BUILD_STATES).toEqual(['planned', 'building', 'working', 'closed']);
+  it('status は5段階の state を持つ（ライフサイクル）', () => {
+    expect(BUILD_STATES).toEqual(['planned', 'building', 'working', 'retiring', 'closed']);
   });
 
   it('バージョンは3桁ゼロ埋め', () => {
@@ -89,6 +91,46 @@ describe('parseSpec の受理', () => {
     );
     expect(issues).toEqual([]);
     expect(spec?.build[1]?.uses).toEqual(['gate-a']);
+  });
+});
+
+describe('遷移の規則', () => {
+  const allowed: [BuildState, BuildState][] = [
+    ['planned', 'building'],
+    ['planned', 'working'],
+    ['planned', 'retiring'],
+    ['planned', 'closed'],
+    ['building', 'planned'],
+    ['building', 'working'],
+    ['working', 'building'],
+    ['working', 'retiring'],
+    ['working', 'closed'],
+    ['retiring', 'working'],
+    ['retiring', 'closed'],
+    ['closed', 'working'],
+    ['closed', 'building'],
+  ];
+  const forbidden: [BuildState, BuildState][] = [
+    ['working', 'planned'],
+    ['retiring', 'planned'],
+    ['closed', 'planned'],
+  ];
+
+  it.each(allowed)('許す: %s -> %s', (from, to) => {
+    expect(canTransition(from, to)).toBe(true);
+  });
+
+  it.each(forbidden)('拒否する: %s -> %s', (from, to) => {
+    expect(canTransition(from, to)).toBe(false);
+  });
+
+  it('retiring は宣言できる', () => {
+    const { spec, issues } = parseSpec(
+      specJson([buildJson({ status: { state: 'retiring', text: '呼び出し側を移行中' } })]),
+      'test',
+    );
+    expect(issues).toEqual([]);
+    expect(spec?.build[0]?.status.state).toBe('retiring');
   });
 });
 

@@ -17,7 +17,7 @@ Each holds versioned JSON.
 
 A **build** is a thing to build and verify as a unit. It is not a "feature": pages, authentication, APIs, and shared layouts all sit at the same level.
 
-- `status` is declared by hand: `planned`, `building`, `working`, `closed`
+- `status` is declared by hand: `planned`, `building`, `working`, `retiring`, `closed`
 - `progress` is computed from tickets
 - The two axes are independent on purpose
 

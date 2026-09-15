@@ -122,24 +122,36 @@ These are two independent axes, and they coexist.
 | `progress` | tickets    | How far along is the work in this project? |
 | `status`   | a human    | What state is this thing actually in?      |
 
-| `state`    | When                 |
-| ---------- | -------------------- |
-| `planned`  | Plan only            |
-| `building` | Under construction   |
-| `working`  | Complete and running |
-| `closed`   | Tracking has ended   |
+| `state`    | When                     |
+| ---------- | ------------------------ |
+| `planned`  | Plan only                |
+| `building` | Under construction       |
+| `working`  | Complete and running     |
+| `retiring` | Still there, removing it |
+| `closed`   | Gone                     |
+
+These form a lifecycle:
+
+```
+planned ──→ building ──→ working ──→ retiring ──→ closed
+  始点                                             終点
+```
+
+The ends mean "it is not there"; the three in between mean "it is there".
+
+`retiring` exists because removing something deeply integrated is not one step: you migrate the callers, delete the calls, delete the code, drop the config. **That work needs somewhere to live**, and neither `working` nor `closed` can hold it.
 
 `progress` is computed from tickets, and **a build with no tickets has no `progress` field at all** — never write `0/0`. The absent field means "this project is not tracking it yet".
 
 `status` is **never derived from `progress`**. A starter's harness builds are running but have no tickets, so deriving would report them as `planned`. Validation checks only that `state` is in the vocabulary and `text` is non-empty; it does not cross-check the two axes, because agreeing on a lie is worse than a stale note.
 
-**`text` is required.** It says why the build is in that state, and it is also where a `closed` build records its reason — there is no separate `closed` field.
+**`text` is required.** It says why the build is in that state.
 
 `text` can go stale when tickets move `progress` without anyone touching `status`. This is accepted, the same way a stale `verify` is accepted: both are free text.
 
 ### Rules
 
-- **Never delete a build.** Close it instead (`state: "closed"`). Deletion would break `uses` references and tickets. (Deletion is still under design.)
+- **Never delete a build by hand.** `build:remove` handles it, and `bump` also drops `closed` builds. Deleting by hand would break `uses` references and tickets.
 - All fields are required. Empty arrays are allowed; empty strings are not, because they are indistinguishable from a forgotten value.
 - `progress` is the only field that may be absent, and absence carries meaning.
 
@@ -154,7 +166,13 @@ These are two independent axes, and they coexist.
 | `state` in the vocabulary                     | whether the declared state is true      |
 | `progress.total > 0` and `done <= total`      | —                                       |
 
-`state` transitions are checked by the CLI rather than the schema, because the schema cannot see the previous state. The only forbidden move is `working → planned`: something that ran doesn't become a plan. Everything else is legitimate (rebuild, rollback, reopen, close).
+`state` transitions are checked by the CLI rather than the schema, because the schema cannot see the previous state. The rule is one line:
+
+> **A move that erases what happened is forbidden.**
+
+Only `working`, `retiring`, and `closed` going back to `planned` are blocked: something that ran does not become a plan. Everything else is legitimate — skipping ahead (`planned → closed`), rebuilding (`working → building`), abandoning a removal (`retiring → working`), reopening (`closed → …`).
+
+`planned → retiring` is odd on its face (retiring something that was never built) but is allowed: `state` is declared, so writing the right one next fixes it. Better than another rule.
 
 ## Writes go through the script
 

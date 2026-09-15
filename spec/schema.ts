@@ -12,12 +12,15 @@ export type SpecType = (typeof SPEC_TYPES)[number];
 /**
  * build のライフサイクル。**手で宣言する**。progress からは導出しない。
  * progress（チケットの消化状況）と status（判断）は別の軸として共存する。
- * - planned:  プランだけ
- * - building: 作っている最中
- * - working:  動いている
- * - closed:   追跡を閉じた（text に理由を書く）
+ *
+ *   planned --> building --> working --> retiring --> closed
+ *     始点                                            終点
+ *
+ * 始点と終点は「無い」、間の3つは「ある」。
+ * retiring は「まだあるが、消す作業中」。深く統合されたものの削除は1ステップではないので、
+ * その作業に居場所を与えるために要る。
  */
-export const BUILD_STATES = ['planned', 'building', 'working', 'closed'] as const;
+export const BUILD_STATES = ['planned', 'building', 'working', 'retiring', 'closed'] as const;
 export type BuildState = (typeof BUILD_STATES)[number];
 
 /**
@@ -42,7 +45,7 @@ export interface BuildProgress {
 
 /**
  * build の状態。チケットからは判定できないため宣言する。
- * state は語彙、text はなぜその状態なのかの説明（closed の理由もここ）。
+ * state は語彙、text はなぜその状態なのかの説明。
  */
 export interface BuildStatus {
   readonly state: BuildState;
@@ -212,6 +215,27 @@ function readBuildId(input: unknown, label: string, issues: SpecIssue[]): string
   }
   return value;
 }
+
+export const BUILD_STATE_MEANING: Record<BuildState, string> = {
+  planned: 'プランだけ',
+  building: '作っている最中',
+  working: '完成して動いている',
+  retiring: 'まだあるが、消す作業中',
+  closed: '無くなった',
+};
+
+/**
+ * 起きたことを消す移動を禁止する。
+ * 「一度作って動いたものが、計画だけだったことになる」のは記録の否定になる。
+ * 前進（飛ばすのも可）と巻き戻し（building に戻す、retiring をやめる）は許す。
+ */
+export function canTransition(from: BuildState, to: BuildState): boolean {
+  return !(to === 'planned' && from !== 'planned' && from !== 'building');
+}
+
+/** 禁止される移動の説明。CLI のエラー文に使う。 */
+export const TRANSITION_RULE =
+  'planned に戻せるのは planned と building だけです。作って動いたものをプランには戻せません。';
 
 /** status は宣言値。語彙内であることと text が空でないことだけを検証する。 */
 function readStatus(input: unknown, label: string, issues: SpecIssue[]): BuildStatus | undefined {

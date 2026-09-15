@@ -57,6 +57,7 @@ validate / show / bump / build:add / build:set / build:rename
 ### build = 作るもの
 
 - verify できる単位。バーティカルスライス
+- **verify は「観測できる結果」の列（`string[]`）。** 散文1本にしない理由は後述（分割力）
 - id は `<kind>-<対象>`。**kind の語彙は検証しない**（ガイドのみ）理由は後述
 - `uses` は片方向・順序を強制しない
 - **削除しない。`retiring` → `closed` → bump で落ちる**
@@ -65,12 +66,69 @@ validate / show / bump / build:add / build:set / build:rename
 
 - verify できる単位。バーティカルスライス
 - **1 build : 1 ticket / 1 build : N ticket / N build : 1 ticket** のどれもあり得る
-- `builds` に「そのチケットが手を入れる build」を全部書く。**意味での取捨をしない**
+- `targets` に「そのチケットが手を入れる build」を書く。**意味での取捨をしない**
   - リファクタでもバグ修正でも入れてよい。分母が増えて分子が増える、でよい
-  - 「verify に寄与するか」を判断させるのは余計な負荷。機械で検証できない規則は置かない
+  - `condition: null` がそれ（触るが条件は進めない）。`[]` も許す
 - 順序は持たせない（`verify` と `title` を読めば分かる。粗い依存は build の `uses` で表現）
 - 消化したチケットは残す（消すと分母が減って progress が意味を失う）
 - 起票は都度（まとめて洗い出してもよい。強制しない）
+
+### 分割力の矯正（後から追加した論点）
+
+**問題**: build と ticket が同じ形（`title` + 散文 verify）だと、両者が collapse して
+**1build 1ticket にしかならない**。散文には継ぎ目が無いので、切ろうにも切れない。
+
+**解決**: 継ぎ目を build 側の verify に作る。`verify` を**条件の列**にし、ticket が
+「どの build の、どの条件を進めるか」を指す。
+
+```json
+// build
+{ "id": "auth-login",
+  "verify": ["有効な資格情報でセッションが発行される", "無効な資格情報では 401 が返る"] }
+
+// ticket（統合形。`builds` と `advances` を分けない）
+{ "id": "tkt-0001", "specType": "product",
+  "targets": [{ "build": "auth-login", "condition": "無効な資格情報では 401 が返る" }],
+  "title": "失敗系の分岐を実装",
+  "verify": "空欄・形式不正・不一致の3パターンで 401 とエラー表示が出る",
+  "status": "todo", "resolvedIn": null }
+```
+
+**統合する理由**: 分けて `builds` と `advances` にすると「この条件はどの build のものか」が
+決まらない状態が書けてしまう。統合するとその検査自体が不要になる。
+
+**`builds` は導出**（`targets.map(t => t.build)`）なのでフィールドごと消える。
+
+**条件は文字列で指す**。index だと `verify` を並べ替えた瞬間に指す先が変わるため。
+
+| 検証       | 内容                                                                      |
+| ---------- | ------------------------------------------------------------------------- |
+| 条件の一意 | 同一 build 内で `verify` が重複しない（build をまたぐ重複は許す）         |
+| 参照解決   | `targets[].condition` がその build の `verify` に実在する                 |
+| **上限**   | **1 ticket は同一 build につき条件1つまで**（＝同じ build を2回書けない） |
+| null       | `condition: null` = 触るが条件は進めない（リファクタ・雑務）              |
+
+**上限が分割の矯正**。2条件を1枚で片付けたければ、ticket を2枚に割るか、build を2つに割るか。
+どちらでもいいが、**どちらかは必ず起きる**。
+
+**副産物（一番大きい）**: 条件が列挙されるので以下が検査できる。
+
+> `status: working` を宣言する build は、すべての条件が done な ticket から参照されていること。
+
+`status` は宣言値のままだが、**根拠を要求できる**。適用範囲は「ticket が 1 件以上ある build」
+に限る（hamess の 9 件は ticket 無しで working なので）。`retiring` / `closed` は対象外。
+
+**代償**:
+
+- 既存 9 件の `verify` を配列化する作業（`hook-lefthook` は2条件に割れる）
+- cross-document（複数ファイルをまたぐ）検証は `parseSpec` に置けない（1ファイルしか見ない）
+  → **`store.ts` を新設**して分離する
+
+| モジュール             | 責務                                                               |
+| ---------------------- | ------------------------------------------------------------------ |
+| `schema.ts`            | 1ドキュメントの形（変更なし）                                      |
+| **`store.ts`（新規）** | 現行 spec + tickets の読み込み、progress 算出、cross-document 検証 |
+| `cli.ts`               | 引数解釈・表示・ディスパッチ（薄いまま保つ）                       |
 
 ### ticket のフィールド（仮）
 
@@ -78,23 +136,23 @@ validate / show / bump / build:add / build:set / build:rename
 {
   "id": "tkt-0001",
   "specType": "product",
-  "builds": ["auth-login"],
+  "targets": [{ "build": "auth-login", "condition": "無効な資格情報では 401 が返る" }],
   "title": "ログインフォームのバリデーションを実装",
   "verify": "空欄と不正な形式でエラーが出て、正しい入力で送信できる",
   "status": "todo",
-  "resolvedIn": 1
+  "resolvedIn": null
 }
 ```
 
-| フィールド   | 内容                                                                    |
-| ------------ | ----------------------------------------------------------------------- |
-| `id`         | build と同じ形式検証が通る（`tkt-0001` 等）。※要確定                    |
-| `specType`   | `product \| harness`。横断配置なので必須                                |
-| `builds`     | **1件以上必須。** M:N を許す                                            |
-| `title`      | 何をするか                                                              |
-| `verify`     | 何をもって完了とするか。build の verify を具体化                        |
-| `status`     | `todo \| doing \| done`（※要確定）                                      |
-| `resolvedIn` | **機械が書く。** done になったときの現行バージョン番号。reopen で消える |
+| フィールド   | 内容                                                                        |
+| ------------ | --------------------------------------------------------------------------- |
+| `id`         | build と同じ形式検証が通る（`tkt-0001` 等）                                 |
+| `specType`   | `product \| harness`。横断配置なので必須                                    |
+| `targets`    | `{ build, condition }` の配列。`condition: null` は「触るが条件は進めない」 |
+| `title`      | 何をするか                                                                  |
+| `verify`     | 何をもって完了とするか。build の verify の条件を具体化                      |
+| `status`     | `todo \| doing \| done`                                                     |
+| `resolvedIn` | **機械が書く。** done になったときの現行バージョン番号。reopen で消える     |
 
 ### state はライフサイクル
 
@@ -152,10 +210,13 @@ planned ──→ building ──→ working ──→ retiring ──→ closed
 ### progress の算出
 
 ```
-progress(N) = build X を参照するチケットのうち、
-              open であるもの + resolvedIn === N であるもの
+progress(N, build X) = X を target に持つチケットのうち、
+                       open であるもの + resolvedIn === N であるもの
 total = その総数、done = うち status === "done"
 ```
+
+`condition: null` の target も分数に入る（作業であることに変わりはない。
+あなたの「分母が増えて分子が増える、それだけでいい」に従う）。
 
 - ticket が0件なら **フィールドごと absent**（`0/0` とは書かない）
 - **過去版の `progress` は凍結**。突き合わせ検証をしない（その時点のスナップショット）
@@ -202,15 +263,17 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 
 ## 未決・要検討
 
-- [ ] チケットの `id` 形式（`tkt-0001` か、番号のみか）
-- [ ] チケットの `status` 語彙（`todo / doing / done` の3つでよいか。`blocked` を入れるか）
-- [ ] `build:remove` を独立コマンドにするか、bump の GC に任せるか
-- [ ] `archive/vN.json` のファイル名の付け方（`v001.json` でよいか）
-- [ ] reopen で過去版の progress が動く件（警告して許可、でよいか）
-- [ ] チケットを削除したときの `progress` 再計算（常に許可でよいか）
-- [ ] `spec init` / フォーク手順（チケットの形が決まってから）
-- [ ] `retiring` の語彙が適切か（`deprecating` / `removing` 等）
-- [ ] `spec/harness` の build に `progress` を持たせるか（今は全部 absent）
+- [x] チケットの `id` 形式（`tkt-0001` か、番号のみか）
+- [x] チケットの `status` 語彙（`todo / doing / done` の3つでよいか。`blocked` を入れるか）
+- [x] `build:remove` を独立コマンドにするか、bump の GC に任せるか
+      → **両方やる。** 独立コマンドを持つ（明示操作） + `bump` でも GC する（忘れても溜まらない）。
+      同じ参照ガード（open チケット・`uses` が参照していれば拒否）を両方にかける
+- [x] `archive/vN.json` のファイル名の付け方（`v001.json` でよいか）
+- [x] reopen で過去版の progress が動く件（警告して許可、でよいか）
+- [x] チケットを削除したときの `progress` 再計算（常に許可でよいか）
+- [ ] **後回し**: `spec init` / フォーク手順（チケットの形が決まってから）
+- [x] `retiring` の語彙が適切か（`deprecating` / `removing` 等）
+- [x] `spec/harness` の build に `progress` を持たせるか（今は全部 absent）
 
 ---
 
@@ -224,29 +287,40 @@ backends / frameworks / libraries を同時に覆えない。**形は矯正、�
 - [ ] `spec/README.md`: ライフサイクル図、`closed` の意味の変更、遷移規則
 - [ ] `AGENTS.md`: state の語彙を更新
 
-### 2. `bump` の closed 落とし
+### 2. `bump` の closed 落とし + `build:remove`
 
-- [ ] `cli.ts`: `closed` を落とす。open チケット参照があれば残す
+- [ ] `cli.ts`: `bump` で `closed` を落とす
+- [ ] `cli.ts`: `build:remove` を追加（同じ参照ガード）
+- [ ] 参照ガード: open な ticket の `targets` か、他の build の `uses` が参照していれば拒否
 - [ ] 落とした/残したを理由付きで表示
 - [ ] `schema.test.ts` / `spec/README.md` を更新
 
-### 3. チケット本体
+### 3. `verify` を条件の列にする
 
-- [ ] `schema.ts`: Ticket の型・語彙・検証（`builds` の参照解決、`resolvedIn`）
-- [ ] `schema.ts`: `progress` の算出（`current` + `archive/vN`）
+- [ ] `schema.ts`: `Build.verify` を `string[]` に変更。同一 build 内の重複を拒否
+- [ ] `spec/harness/v001.json`: 9 件の `verify` を配列化（必要なものは分割）
+- [ ] `schema.test.ts` / `spec/README.md` を更新
+
+### 4. チケット本体
+
+- [ ] `store.ts` を新設（現行 spec + tickets の読み込み、cross-document 検証）
+- [ ] `schema.ts`: Ticket の型・語彙・検証（`targets` の参照解決、`resolvedIn`）
+- [ ] `schema.ts`: `targets` の上限（同一 build につき条件1つ）を検証
+- [ ] `store.ts`: `progress` の算出（`current` + `archive/vN`）
+- [ ] `store.ts`: `status: working` の被覆検査（ticket が 1 件以上ある build のみ）
 - [ ] `cli.ts`: `ticket:add` / `ticket:set` / `ticket:done` / `ticket:reopen` / `ticket:list`
 - [ ] `progress` の突き合わせ検証（現行版のみ）
 - [ ] `spec/tickets/current.json` を作成
 - [ ] テスト
 
-### 4. archive と `resolvedIn`
+### 5. archive と `resolvedIn`
 
 - [ ] done で即アーカイブ（`archive/vN.json`）
 - [ ] reopen で `resolvedIn` を索引にして取り出す
 - [ ] `build:rename` が archive も書き換えるようにする
 - [ ] `build:remove` の参照ガードを archive も見るようにする
 
-### 5. ドキュメント
+### 6. ドキュメント
 
-- [ ] `spec/README.md` のチケット節（build と ticket の表、粒度の問い、保存構造）
+- [ ] `spec/README.md` のチケット節（build と ticket の表、粒度の問い、条件、保存構造）
 - [ ] `AGENTS.md` にチケットの存在を1行

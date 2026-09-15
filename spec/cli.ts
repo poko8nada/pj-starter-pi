@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import {
   BUILD_ID_HINT,
   BUILD_STATES,
+  canTransition,
   currentVersion,
   formatVersion,
   isSpecType,
@@ -11,6 +12,7 @@ import {
   readSpec,
   SpecError,
   specTypeDir,
+  TRANSITION_RULE,
   writeSpec,
   type Build,
   type BuildState,
@@ -150,15 +152,13 @@ function readUses(raw: string | undefined): string[] {
 
 /**
  * status の遷移制約。単体では判定できないので CLI 層に置く。
- * 禁止は working -> planned のみ。「動いていたものがプランに戻る」のは事故のサインで、
- * 他は全て正当（作り直し・巻き戻し・再開・閉じる）。
+ * 規則は schema.ts の canTransition が持つ（型と語彙と同じ場所に集約する）。
  */
 function assertTransition(from: BuildState, to: BuildState): void {
-  if (from === 'working' && to === 'planned') {
-    fail(
-      `state を working から planned には戻せません（${from} -> ${to}）\n  動いているものを巻き戻す場合は building を経由してください。`,
-    );
+  if (canTransition(from, to)) {
+    return;
   }
+  fail(`state を ${from} から planned には戻せません（${from} -> ${to}）\n  ${TRANSITION_RULE}`);
 }
 
 /** 対象バージョンの Spec を読む。--version 省略時は現行版。 */
