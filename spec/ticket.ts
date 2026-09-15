@@ -69,6 +69,22 @@ export function formatTicketId(n: number): string {
   return `tkt-${String(n).padStart(4, '0')}`;
 }
 
+/**
+ * 次に使う番号を決める。既存の最大 + 1 で、番号は再利用しない。
+ * アーカイブ済みも数えるので、終わったチケットの番号が再び使われることはない（履歴が重ならない）。
+ */
+export function nextTicketNumber(tickets: readonly Ticket[]): number {
+  let max = 0;
+  for (const ticket of tickets) {
+    const matched = /^tkt-(\d+)$/.exec(ticket.id);
+    if (matched !== null) {
+      max = Math.max(max, Number(matched[1]));
+    }
+  }
+  const next = max + 1;
+  return next;
+}
+
 // ---- フィールド単位の読み取り ----
 
 function readTicketId(input: unknown, label: string, issues: Issue[]): string | undefined {

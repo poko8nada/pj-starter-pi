@@ -1,28 +1,44 @@
-import { parseArgs } from 'node:util';
 import { DocumentError, messageOf } from './document.ts';
+import {
+  assertCandidateAcceptable,
+  assertTransition,
+  fail,
+  has,
+  parseOptions,
+  readId,
+  readState,
+  readUses,
+  readVerify,
+  requireValue,
+  single,
+  type Options,
+} from './args.ts';
 import {
   BUILD_ID_HINT,
   BUILD_STATES,
-  canTransition,
   currentVersion,
   formatVersion,
-  isSpecType,
-  isValidBuildId,
   listVersions,
   readSpec,
-  referencingBuilds,
   specTypeDir,
-  TRANSITION_RULE,
   writeSpec,
   type Build,
-  type BuildState,
   type Spec,
-  type SpecType,
 } from './schema.ts';
+import { runTicketAdd, runTicketList, runTicketRemove, runTicketSet } from './ticket-cli.ts';
+import {
+  computeProgressFor,
+  loadSnapshot,
+  persist,
+  removalBlockers,
+  renameBuildInTickets,
+  throwIfIssues,
+  type Snapshot,
+} from './store.ts';
+import { ticketsFile } from './ticket.ts';
 
-// spec/ の CLI。JSON の読み書きは schema.ts の関数だけを通す。
+// spec/ の CLI。JSON の読み書きは各ドキュメントの関数だけを通す。
 // ここには「引数の解釈」「遷移の制約」「表示」以外を書かない。
-// 遷移の制約を schema.ts ではなくここに置く理由: parseSpec は「前の状態」を知らないので、単体では判定できない。
 
 const USAGE = `spec - spec/ の JSON を検証・更新する
 
@@ -36,19 +52,27 @@ const USAGE = `spec - spec/ の JSON を検証・更新する
 バージョン:
   bump                         現行版の次のバージョンを作る（build は引き継ぐ。closed は落とす）
 
-build の更新:
+build:
   build:add --id <id> --name <name> --verify <text> [--verify <text>...] [--uses <id,id>] [--state <state>] [--text <text>]
   build:set --id <id> [--name <name>] [--verify <text>...] [--uses <id,id>] [--state <state>] [--text <text>]
   build:rename --id <id> --to <new-id>
   build:remove --id <id>       参照が1つも無いときだけ削除できる
 
+ticket:
+  ticket:add --build <id> --condition <text|null> --title <text> --verify <text> [--build ... --condition ...]*
+  ticket:set --id <tkt-0001> [--title <text>] [--verify <text>] [--status <status>]
+  ticket:remove --id <tkt-0001>
+  ticket:list
+
 verify は「観測できる結果」の列。--verify を繰り返して複数書く（少なくとも1つ必要）。
 カンマでは区切らない（条件の文に読点が入りうるため）。
 build:set で --verify を渡すと列全体を置き換える。
 
-build:set は指定したフラグだけを変更する（省略したものは現状のまま）。
-1つも指定しなければエラーになる。
-status は宣言値。チケットからは導出されない。state は ${BUILD_STATES.join(' | ')} のいずれか。
+更新系は指定したフラグだけを変更する（省略したものは現状のまま）。
+1つも指定しなければエラーになる。追加だけは既定値を持つ（build は planned から始まる）。
+status は宣言値。チケットからは導出されない。
+  build の state: ${BUILD_STATES.join(' | ')}
+  ticket の status: todo | doing | done（done は自動で archive へ移る）
 id は小文字とハイフンで2セグメント以上。先頭は種別。${BUILD_ID_HINT}
 
 共通オプション:
@@ -56,156 +80,38 @@ id は小文字とハイフンで2セグメント以上。先頭は種別。${BU
   --version <n>                対象バージョン（既定: 現行版）
   --root <path>                リポジトリのルート（既定: カレント）`;
 
-/** parseArgs が返す値。--verify だけ複数指定できるので配列になりうる。 */
-type OptionValue = string | string[] | undefined;
-
-interface Options {
-  readonly root: string;
-  readonly specType: SpecType;
-  readonly version: number | undefined;
-  readonly values: Record<string, OptionValue>;
-}
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
-}
-
-/** --type の値を語彙に突き合わせる。語彙外は即エラー。 */
-function readSpecType(raw: string | undefined): SpecType {
-  const value = raw ?? 'product';
-  if (!isSpecType(value)) {
-    fail(`--type は次のいずれかです: product, harness（受け取った値: ${value}）`);
-  }
-  return value;
-}
-
-function readVersion(raw: string | undefined): number | undefined {
-  if (raw === undefined) {
-    return undefined;
-  }
-  if (!/^\d+$/.test(raw)) {
-    fail(`--version は正の整数です（受け取った値: ${raw}）`);
-  }
-  return Number(raw);
-}
-
-function parseOptions(args: readonly string[]): Options {
-  const { values } = parseArgs({
-    args: [...args],
-    options: {
-      type: { type: 'string' },
-      version: { type: 'string' },
-      root: { type: 'string' },
-      to: { type: 'string' },
-      id: { type: 'string' },
-      name: { type: 'string' },
-      verify: { type: 'string', multiple: true },
-      uses: { type: 'string' },
-      state: { type: 'string' },
-      text: { type: 'string' },
-    },
-    strict: true,
-    allowPositionals: false,
-  });
-  return {
-    root: values.root ?? process.cwd(),
-    specType: readSpecType(values.type),
-    version: readVersion(values.version),
-    values,
-  };
-}
-
-/** フラグが指定されたか。更新系で「省略＝変更しない」を判定するために使う。 */
-function has(options: Options, key: string): boolean {
-  return options.values[key] !== undefined;
-}
-
-/**
- * 必須フラグを読む。trim は schema でも行われるが、ここで先に行うことで
- * 空白だけの入力をフラグ名付きで弾ける（JSON のパスではなく、打った語で伝える）。
- */
-function requireValue(options: Options, key: string, flag: string): string {
-  const value = options.values[key];
-  if (typeof value !== 'string' || value.trim() === '') {
-    fail(`${flag} は必須です`);
-  }
-  return value.trim();
-}
-
-/**
- * --verify の列を読む。--verify を繰り返して指定する。
- * カンマで区切らないのは、条件の文に読点が入りうるため。
- * trim は schema でも行われるが、ここで先に正規化して重複の早期検出と
- * 空白だけの入力を正しく弾けるようにする。
- */
-function readVerify(options: Options, flag: string): string[] {
-  const value = options.values.verify;
-  const list = Array.isArray(value) ? value : value === undefined ? [] : [value];
-  const conditions = list.map((item) => item.trim()).filter((item) => item !== '');
-  if (conditions.length === 0) {
-    fail(`${flag} を1つ以上指定してください（--verify を繰り返す）`);
-  }
-  return conditions;
-}
-
-/**
- * 単一値のフラグを読む。--verify だけが複数指定を許すので、他のフラグに配列が来たら入口で拒否する。
- */
-function single(options: Options, key: string): string | undefined {
-  const value = options.values[key];
-  if (Array.isArray(value)) {
-    fail(`--${key} は1回だけ指定できます`);
-  }
-  return value;
-}
-
-/** --state の値を語彙に突き合わせる。 */
-function readState(raw: string | undefined): BuildState {
-  const matched = BUILD_STATES.find((state) => state === raw);
-  if (matched === undefined) {
-    fail(`--state は次のいずれかです: ${BUILD_STATES.join(', ')}（受け取った値: ${raw}）`);
-  }
-  return matched;
-}
-
-/**
- * --id の形を検証する。schema と同じ基準を入口でも適用して早く失敗させる。
- * trim も schema と同じ基準で先に行う。ここで揃えないと、同じ入力の扱いが
- * 経路によって変わる（CLI では弾かれ、schema では通る）。
- */
-function readId(options: Options, key: string, flag: string): string {
-  const value = requireValue(options, key, flag);
-  if (!isValidBuildId(value)) {
-    fail(
-      `${flag} の形式が不正です: ${value || '(空)'}\n  小文字とハイフンで2セグメント以上（先頭は種別）。${BUILD_ID_HINT}`,
-    );
-  }
-  return value;
-}
-
-function readUses(raw: string | undefined): string[] {
-  return (raw ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => value !== '');
-}
-
-/**
- * status の遷移制約。単体では判定できないので CLI 層に置く。
- * 規則は schema.ts の canTransition が持つ（型と語彙と同じ場所に集約する）。
- */
-function assertTransition(from: BuildState, to: BuildState): void {
-  if (canTransition(from, to)) {
-    return;
-  }
-  fail(`state を ${from} から planned には戻せません（${from} -> ${to}）\n  ${TRANSITION_RULE}`);
-}
-
 /** 対象バージョンの Spec を読む。--version 省略時は現行版。 */
 async function load(options: Options): Promise<{ version: number; spec: Spec }> {
   const version = options.version ?? (await currentVersion(options.root, options.specType));
   return { version, spec: await readSpec(options.root, options.specType, version) };
+}
+
+/**
+ * 対象バージョンが現行版ならスナップショットを返す。過去版なら undefined。
+ * 過去版への書き込みはチケットと一致しなくてよいので、整合検査を省く。
+ */
+async function currentSnapshotIfCurrent(
+  options: Options,
+  version: number,
+): Promise<Snapshot | undefined> {
+  if (version !== (await currentVersion(options.root, options.specType))) {
+    return undefined;
+  }
+  return loadSnapshot(options.root, options.specType);
+}
+
+/**
+ * 現行版とチケットを読み、検証してから使う。
+ * 現行版を触るコマンドは必ずこれを通す（progress の整合を保つため）。
+ */
+async function withSnapshot(
+  options: Options,
+  use: (snapshot: Snapshot) => void,
+): Promise<Snapshot> {
+  const snapshot = await loadSnapshot(options.root, options.specType);
+  throwIfIssues(snapshot);
+  use(snapshot);
+  return snapshot;
 }
 
 /** 現行版かどうか。過去版への書き込みを警告するために使う。 */
@@ -238,17 +144,37 @@ async function runValidate(options: Options): Promise<void> {
   if (versions.length === 0) {
     fail(`${specTypeDir(options.root, options.specType)} にバージョンファイルがありません`);
   }
-  // 現行版だけでなく履歴も検証する。過去版は凍結されるが、壊れたまま残したくない。
+  const current = await currentVersion(options.root, options.specType);
+
   // 同時実行はしない。1件目で落ちたときに残りを無駄に読まないため順序を保つ。
   const results: string[] = [];
   for (const version of versions) {
     // oxlint-disable-next-line no-await-in-loop -- 検証は順序よく、失敗は即中断する
-    await readSpec(options.root, options.specType, version);
+    await validateVersion(options, version, version === current);
     results.push(`ok  ${options.specType}/${formatVersion(version)}`);
   }
   for (const line of results) {
     console.log(line);
   }
+}
+
+/**
+ * 1バージョンを検証する。
+ * 過去版は読み込んで形を確かめるだけ。progress はその時点のスナップショットなので、
+ * 今のチケットと一致するはずがなく、突き合わせると常に落ちる。
+ * 現行版だけ cross-document の検証（progress の突き合わせ、targets の参照解決、
+ * working の被覆）を行う。
+ */
+async function validateVersion(
+  options: Options,
+  version: number,
+  isCurrentVersion: boolean,
+): Promise<void> {
+  if (!isCurrentVersion) {
+    await readSpec(options.root, options.specType, version);
+    return;
+  }
+  await withSnapshot(options, () => undefined);
 }
 
 async function runShow(options: Options): Promise<void> {
@@ -263,20 +189,25 @@ async function runShow(options: Options): Promise<void> {
  * closed の build はここで落とす（build リストが縮む唯一の瞬間）。
  * ただし他から参照されているものは残す。参照が切れた状態で履歴に入れたくないため。
  * 自動で触るのは closed だけで、planned / building / working / retiring は残す。
+ *
+ * progress は引き継がず、新バージョンの数え方で置き直す。progress の算出元は
+ * バージョンに属さないチケットなので、引き継ぐと必ずずれる（v001 では正しい値が
+ * v002 では嘘になる）。新バージョンの archive はまだ無いので、open だけで数える。
  */
 async function runBump(options: Options): Promise<void> {
-  const { version, spec } = await load(options);
+  const snapshot = await loadSnapshot(options.root, options.specType);
+  const version = snapshot.version;
   const next = version + 1;
 
   const dropped: string[] = [];
   const keptClosed: { id: string; blockers: string[] }[] = [];
   const kept: Build[] = [];
-  for (const build of spec.build) {
+  for (const build of snapshot.spec.build) {
     if (build.status.state !== 'closed') {
       kept.push(build);
       continue;
     }
-    const blockers = referencingBuilds(spec, build.id);
+    const blockers = removalBlockers(snapshot, build.id);
     if (blockers.length > 0) {
       keptClosed.push({ id: build.id, blockers });
       kept.push(build);
@@ -285,9 +216,21 @@ async function runBump(options: Options): Promise<void> {
     dropped.push(build.id);
   }
 
-  const file = await writeSpec(options.root, options.specType, next, { ...spec, build: kept });
+  // 新バージョンの archive はまだ無いので、open だけで数える。
+  // これが「v002 を切った直後の v002 の progress」そのもの。
+  const progress = computeProgressFor(kept, snapshot.open, []);
+  const rebuilt = kept.map((build) => {
+    const { progress: _stale, ...rest } = build;
+    const value = progress.get(build.id);
+    return value === undefined ? rest : Object.assign(rest, { progress: value });
+  });
+
+  const file = await writeSpec(options.root, options.specType, next, {
+    ...snapshot.spec,
+    build: rebuilt,
+  });
   console.log(
-    `created ${file} (from ${formatVersion(version)}, ${kept.length} builds carried over)`,
+    `created ${file} (from ${formatVersion(version)}, ${rebuilt.length} builds carried over)`,
   );
   // 静かに消えないことが大事。何を落として何を残したかを必ず出す。
   if (dropped.length > 0) {
@@ -327,17 +270,15 @@ function findBuild(spec: Spec, id: string): Build {
 
 /**
  * 削除の前提条件を検査する。参照が1つでもあれば拒否する。
- *
- * チケットが入ったら、open なチケットの targets もここで見る。
- * 参照を切る場所を1箇所に集約しておくことで、追加時に漏れないようにする。
+ * 参照の列挙は store.ts に集約する（spec 内の uses とチケットの targets の両方を見る）。
  */
-function assertRemovable(spec: Spec, build: Build): void {
-  const blockers = referencingBuilds(spec, build.id);
+function assertRemovable(snapshot: Snapshot, build: Build): void {
+  const blockers = removalBlockers(snapshot, build.id);
   if (blockers.length === 0) {
     return;
   }
   fail(
-    `build を削除できません: ${build.id}\n  次の build が uses で参照しています: ${blockers.join(', ')}\n  先に参照を外すか、その build も削除してください。`,
+    `build を削除できません: ${build.id}\n  次のものが参照しています: ${blockers.join(', ')}\n  先に参照を外すか、その build も削除してください。`,
   );
 }
 
@@ -377,6 +318,7 @@ async function runBuildAdd(options: Options): Promise<void> {
  */
 async function runBuildSet(options: Options): Promise<void> {
   const { version, spec } = await load(options);
+  const snapshot = await currentSnapshotIfCurrent(options, version);
   const id = readId(options, 'id', '--id');
   const current = findBuild(spec, id);
 
@@ -408,13 +350,16 @@ async function runBuildSet(options: Options): Promise<void> {
     },
   };
 
+  const next = withBuild(spec, id, () => updated);
+  if (next === null) {
+    fail(`build が見つかりません: ${id}`);
+  }
+  if (snapshot !== undefined) {
+    assertCandidateAcceptable(snapshot, next);
+  }
+
   await warnIfHistoric(options, version);
-  const file = await writeSpec(
-    options.root,
-    options.specType,
-    version,
-    withBuild(spec, id, () => updated),
-  );
+  const file = await writeSpec(options.root, options.specType, version, next);
   console.log(`updated ${id} -> ${file}`);
 }
 
@@ -430,9 +375,10 @@ function renamedBuild(build: Build, from: string, to: string): Build {
   };
 }
 
-/** id を変更し、uses の参照も同時に書き換える。手で置換させないためのコマンド。 */
+/** id を変更し、uses とチケットの参照も同時に書き換える。手で置換させないためのコマンド。 */
 async function runBuildRename(options: Options): Promise<void> {
   const { version, spec } = await load(options);
+  const snapshot = await currentSnapshotIfCurrent(options, version);
   const from = readId(options, 'id', '--id');
   const to = readId(options, 'to', '--to');
   if (from === to) {
@@ -449,6 +395,16 @@ async function runBuildRename(options: Options): Promise<void> {
   };
 
   await warnIfHistoric(options, version);
+
+  // チケットの参照も同時に書き換える。片方だけだと参照切れになる。
+  // チケットを先に書き、その後 spec を書く（途中で落ちても検証が不整合を検出できる）。
+  if (snapshot !== undefined) {
+    const tickets = renameBuildInTickets([...snapshot.open, ...snapshot.archived], from, to);
+    await persist(snapshot, tickets, renamed);
+    console.log(`renamed ${from} -> ${to} -> ${ticketsFile(options.root)}`);
+    return;
+  }
+
   const file = await writeSpec(options.root, options.specType, version, renamed);
   console.log(`renamed ${from} -> ${to} -> ${file}`);
 }
@@ -459,13 +415,18 @@ async function runBuildRename(options: Options): Promise<void> {
  * 「実在した work を終わらせる」は closed であって削除ではない。
  */
 async function runBuildRemove(options: Options): Promise<void> {
-  const { version, spec } = await load(options);
   const id = readId(options, 'id', '--id');
-  const build = findBuild(spec, id);
-  assertRemovable(spec, build);
+  const snapshot = await withSnapshot(options, (current) => {
+    assertRemovable(current, findBuild(current.spec, id));
+  });
 
-  await warnIfHistoric(options, version);
-  const file = await writeSpec(options.root, options.specType, version, withoutBuild(spec, id));
+  await warnIfHistoric(options, snapshot.version);
+  const file = await writeSpec(
+    options.root,
+    options.specType,
+    snapshot.version,
+    withoutBuild(snapshot.spec, id),
+  );
   console.log(`removed ${id} -> ${file}`);
 }
 
@@ -485,6 +446,14 @@ async function runCommand(command: string, options: Options): Promise<void> {
       return runBuildRename(options);
     case 'build:remove':
       return runBuildRemove(options);
+    case 'ticket:add':
+      return runTicketAdd(options);
+    case 'ticket:set':
+      return runTicketSet(options);
+    case 'ticket:remove':
+      return runTicketRemove(options);
+    case 'ticket:list':
+      return runTicketList(options);
     default: {
       // 未知のコマンドは使い方を出して異常終了する
       console.log(USAGE);
@@ -505,7 +474,7 @@ async function main(): Promise<void> {
 try {
   await main();
 } catch (error) {
-  // 検証エラーは多行になるため、そのまま見せる
+  // 検証エラーは多行になるのでそのまま見せる
   const detail = error instanceof DocumentError ? error.message : messageOf(error);
   console.error(detail);
   process.exit(1);

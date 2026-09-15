@@ -1,8 +1,10 @@
+import { existsSync } from 'node:fs';
 import { DocumentError, formatIssues, type Issue } from './document.ts';
 import {
   currentVersion,
   readSpec,
   referencingBuilds,
+  writeSpec,
   type Build,
   type Spec,
   type SpecType,
@@ -12,6 +14,7 @@ import {
   emptyTicketFile,
   readTicketFile,
   ticketsFile,
+  writeTicketFile,
   type Ticket,
 } from './ticket.ts';
 
@@ -62,22 +65,33 @@ export async function loadSnapshot(root: string, specType: SpecType): Promise<Sn
 
 /**
  * その build を指すチケットを集める。
- * open と、現行バージョンで done になったもの（archive）。
+ * open と、指定バージョンで done になったもの（archive）。
  * 過去バージョンで done にしたチケットは含めない（bump で台帳がリセットされる）。
  */
-function ticketsFor(snapshot: Snapshot, buildId: string): Ticket[] {
+function ticketsFor(
+  open: readonly Ticket[],
+  archived: readonly Ticket[],
+  buildId: string,
+): Ticket[] {
   const isTarget = (ticket: Ticket) => ticket.targets.some((target) => target.build === buildId);
-  return [...snapshot.open, ...snapshot.archived].filter(isTarget);
+  return [...open, ...archived].filter(isTarget);
 }
 
 /**
  * build ごとの progress を算出する。
  * チケットが0件の build はエントリ自体を作らない（0/0 とは書かない）。
+ *
+ * archived を引数で受けるのは、bump が「次バージョンの数え方」で計算するため。
+ * 新バージョンの archive はまだ無い（= 空）ので、その場合は open だけで数える。
  */
-export function computeProgress(snapshot: Snapshot): Map<string, { done: number; total: number }> {
+export function computeProgressFor(
+  builds: readonly Build[],
+  open: readonly Ticket[],
+  archived: readonly Ticket[],
+): Map<string, { done: number; total: number }> {
   const result = new Map<string, { done: number; total: number }>();
-  for (const build of snapshot.spec.build) {
-    const tickets = ticketsFor(snapshot, build.id);
+  for (const build of builds) {
+    const tickets = ticketsFor(open, archived, build.id);
     if (tickets.length === 0) {
       continue;
     }
@@ -85,6 +99,11 @@ export function computeProgress(snapshot: Snapshot): Map<string, { done: number;
     result.set(build.id, { done, total: tickets.length });
   }
   return result;
+}
+
+/** 現行版の progress を算出する。 */
+export function computeProgress(snapshot: Snapshot): Map<string, { done: number; total: number }> {
+  return computeProgressFor(snapshot.spec.build, snapshot.open, snapshot.archived);
 }
 
 /** progress を反映した build を返す。UI 表示用で、ファイルには書かない。 */
@@ -104,10 +123,9 @@ export function buildWithProgress(
  * チケットの targets が実在の build と条件を指しているかを検証する。
  * 参照切れは常に異常。build:rename / build:remove が取りこぼしたらここで止まる。
  */
-function validateTargets(snapshot: Snapshot, issues: Issue[]): void {
-  const byId = new Map(snapshot.spec.build.map((build) => [build.id, build]));
-  const all = [...snapshot.open, ...snapshot.archived];
-  for (const ticket of all) {
+function validateTargets(spec: Spec, tickets: readonly Ticket[], issues: Issue[]): void {
+  const byId = new Map(spec.build.map((build) => [build.id, build]));
+  for (const ticket of tickets) {
     for (const target of ticket.targets) {
       const label = `tickets.${ticket.id}.targets`;
       const build = byId.get(target.build);
@@ -126,6 +144,17 @@ function validateTargets(snapshot: Snapshot, issues: Issue[]): void {
 }
 
 /**
+ * 書き込み前の候補 spec を、チケットとの整合だけ検査する。
+ * verify の条件を変える変更（build:set）や id を変える変更（build:rename）は
+ * チケットの参照を壊しうるので、書く前にここで止める。
+ */
+export function validateCandidate(snapshot: Snapshot, spec: Spec): readonly Issue[] {
+  const issues: Issue[] = [];
+  validateTargets(spec, [...snapshot.open, ...snapshot.archived], issues);
+  return issues;
+}
+
+/**
  * status の被覆検査。
  * working を宣言した build は、すべての条件が done のチケットから参照されている必要がある。
  * status は宣言値のままなので、根拠を要求するのはここだけ。
@@ -139,7 +168,7 @@ function validateWorkingCoverage(snapshot: Snapshot, issues: Issue[]): void {
     if (build.status.state !== 'working') {
       continue;
     }
-    const tickets = ticketsFor(snapshot, build.id);
+    const tickets = ticketsFor(snapshot.open, snapshot.archived, build.id);
     if (tickets.length === 0) {
       continue;
     }
@@ -203,7 +232,7 @@ function validateProgress(snapshot: Snapshot, issues: Issue[]): void {
  */
 export function validateSnapshot(snapshot: Snapshot): readonly Issue[] {
   const issues: Issue[] = [];
-  validateTargets(snapshot, issues);
+  validateTargets(snapshot.spec, [...snapshot.open, ...snapshot.archived], issues);
   validateProgress(snapshot, issues);
   validateWorkingCoverage(snapshot, issues);
   return issues;
@@ -212,11 +241,21 @@ export function validateSnapshot(snapshot: Snapshot): readonly Issue[] {
 /** 検証して、問題があれば投げる。書き込み前に必ず呼ぶ。 */
 export async function assertValidSnapshot(root: string, specType: SpecType): Promise<Snapshot> {
   const snapshot = await loadSnapshot(root, specType);
+  throwIfIssues(snapshot);
+  return snapshot;
+}
+
+/** 検証結果を、投げられるエラーにする。現行版のパスを添えて位置を明示する。 */
+export function throwIfIssues(snapshot: Snapshot): void {
   const issues = validateSnapshot(snapshot);
   if (issues.length > 0) {
-    throw new DocumentError(formatIssues(`spec/${specType}`, issues));
+    throw new DocumentError(
+      formatIssues(
+        `spec/${snapshot.specType}/v${String(snapshot.version).padStart(3, '0')}.json`,
+        issues,
+      ),
+    );
   }
-  return snapshot;
 }
 
 /**
@@ -229,4 +268,71 @@ export function removalBlockers(snapshot: Snapshot, buildId: string): string[] {
     .filter((ticket) => ticket.targets.some((target) => target.build === buildId))
     .map((ticket) => `ticket ${ticket.id}`);
   return [...fromBuilds, ...fromTickets];
+}
+
+/**
+ * build の id 変更をチケット側にも反映する。
+ * rename を手作業の置換にしないための処理で、open と archive の両方を書き換える。
+ */
+export function renameBuildInTickets(
+  tickets: readonly Ticket[],
+  from: string,
+  to: string,
+): Ticket[] {
+  return tickets.map((ticket) => ({
+    ...ticket,
+    targets: ticket.targets.map((target) =>
+      target.build === from ? { ...target, build: to } : target,
+    ),
+  }));
+}
+
+// ---- 書き込み ----
+
+/** open と archive を分けて書き出す。done の置き場所は常に archive/vN。 */
+export interface TicketWrite {
+  readonly open: readonly Ticket[];
+  readonly archived: readonly Ticket[];
+}
+
+/** チケットの状態から、書き出すべき2つのファイルを作る。 */
+export function splitByStatus(tickets: readonly Ticket[]): TicketWrite {
+  return {
+    open: tickets.filter((ticket) => ticket.status !== 'done'),
+    archived: tickets.filter((ticket) => ticket.status === 'done'),
+  };
+}
+
+/**
+ * チケットと spec の progress を一度に書き出す。
+ *
+ * 2ファイルを書くので原子的ではない。片方で落ちた場合は不整合が残るが、
+ * それを validate が検出する（progress の突き合わせ）ので、黙って壊れたままになることはない。
+ * 順序は「チケット → spec」。spec を先に書くと、progress があるのにチケットが無い状態が生まれ、
+ * 「手コピーの痕跡」として弾かれてしまう。
+ */
+export async function persist(
+  snapshot: Snapshot,
+  tickets: readonly Ticket[],
+  spec: Spec,
+): Promise<void> {
+  const { open, archived } = splitByStatus(tickets);
+  const progress = computeProgressFor(spec.build, open, archived);
+  const rebuilt = spec.build.map((build) => {
+    const { progress: _stale, ...rest } = build;
+    const value = progress.get(build.id);
+    return value === undefined ? rest : { ...rest, progress: value };
+  });
+
+  const archive = archiveFile(snapshot.root, snapshot.version);
+  await writeTicketFile(ticketsFile(snapshot.root), { ticket: [...open] });
+  // 空にする場合も書く（reopen で全件戻ったとき、古いファイルを残すと検証が読んでしまう）。
+  // ただし一度も作られていない場合は作らない（空の archive を並べても意味がない）。
+  if (archived.length > 0 || existsSync(archive)) {
+    await writeTicketFile(archive, { ticket: [...archived] });
+  }
+  await writeSpec(snapshot.root, snapshot.specType, snapshot.version, {
+    ...spec,
+    build: rebuilt,
+  });
 }
