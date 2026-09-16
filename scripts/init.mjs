@@ -7,8 +7,7 @@
 // 何をするか:
 //   スターター自身がチケットを切ってハーネスを作るので、クローンした時点では
 //   そのチケットと、そこから算出された progress が残っている。
-//   また product にはスターターの説明が入っている。それらを全部落として、
-//   空のプロダクト状態にする。
+//   また product にはスターターの説明が入っている。それらを全部落として、空のプロダクト状態にする。
 //
 //   - チケットを両層とも消す
 //   - closed の build を削除する（無くなったものを継承しても意味がない）
@@ -27,8 +26,7 @@ import * as path from 'node:path';
 import { initializeProject, isInitialized } from '../spec/lib/store.ts';
 
 /**
- * スターター自身を表す環境変数。.envrc で設定され、.gitignore により
- * クローン先には配られない。これがあるリポジトリでは init を実行しない。
+ * スターター自身を表す環境変数。.env で設定され、.gitignore によりクローン先には配られない。これがあるリポジトリでは init を実行しない。
  */
 const STARTER_ENV = 'PROJECT_STARTER';
 
